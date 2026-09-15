@@ -46,6 +46,8 @@ roundtrip = "awkward-monetizer roundtrip --root-file data/cms.root"
 # Generate a synthetic NanoAOD file, then run the ADL Q1-Q8 benchmark
 make-nano = "awkward-monetizer make-nano"
 adl = "awkward-monetizer adl"
+# Benchmark backends (awkward vs hybrid) on tiled cms.root
+bench = "awkward-monetizer bench --root-file data/cms.root --scale 20"
 # Launch the analysis notebook
 notebook = "marimo edit examples/analysis.py"
 # Run the test suite

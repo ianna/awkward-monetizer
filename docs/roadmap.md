@@ -78,7 +78,8 @@ All eight queries are implemented in `adl.py` (Awkward + scikit-hep `vector`) an
 - Numba acceleration
 - Arrow zero-copy validation
 
-### ⬜ Benchmarking
+### 🚧 Benchmarking
+- `benchmark.py` implemented: awkward vs hybrid (MonetDB) validated end-to-end and timed on scaled cms.root; ROOT/RDataFrame backend written and gated on `import ROOT`.
 - Compare:
   - MonetDB only
   - Awkward only

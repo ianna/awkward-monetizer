@@ -121,6 +121,31 @@ build pins `MACOSX_DEPLOYMENT_TARGET` so the compiled wheel matches conda-forge'
 Python; if a build is rejected as `macosx_15_0` incompatible, run
 `MACOSX_DEPLOYMENT_TARGET=11.0 pixi install`.
 
+## Benchmarks
+
+`benchmark.py` compares backends on identical data for the dimuon Z→μμ selection
+(opposite-charge pair, 60–120 GeV):
+
+- **awkward** — pure Awkward (uproot read → reconstruct → analyze in memory)
+- **hybrid** — MonetDB + Awkward: data pre-loaded, the event cut pushed to SQL,
+  survivors reconstructed and finished in Awkward
+- **rdataframe** — ROOT `RDataFrame` (gated: runs only if `import ROOT` works)
+
+`--scale K` tiles the input into a K× larger physical ROOT file every backend
+reads, so timings are meaningful; the query phase is timed (median of `--repeats`)
+while one-time setup (reconstruction / DB ingest) is reported separately, since a
+database amortizes load cost across many queries.
+
+```bash
+awkward-monetizer bench --root-file data/cms.root --scale 50 \\
+    --backends awkward,hybrid,rdataframe --repeats 5
+```
+
+The backends cross-check on selected-event count and mean mass (the harness prints
+`agreement across backends: OK`). The embedded hybrid backend loads via `INSERT`
+(slow); use `--hybrid-backend server` (a real MonetDB server with `COPY INTO`) to
+benchmark a realistic load path.
+
 ## Testing
 
 ```bash

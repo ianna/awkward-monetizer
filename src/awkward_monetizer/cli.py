@@ -115,6 +115,16 @@ def _cmd_make_nano(args) -> None:
     print(f"wrote {args.out}: {args.events} events, tree 'Events'")
 
 
+def _cmd_bench(args) -> None:
+    from .benchmark import run
+    conn_kwargs = dict(database=args.database, host=args.host, port=args.port,
+                       user=args.user, password=args.password, dbdir=args.dbdir)
+    backends = tuple(b.strip() for b in args.backends.split(",") if b.strip())
+    run(args.root_file, dataset=args.dataset, backends=backends,
+        scale=args.scale, repeats=args.repeats,
+        hybrid_backend=args.hybrid_backend, conn_kwargs=conn_kwargs)
+
+
 # --------------------------------------------------------------------------
 # Parser
 # --------------------------------------------------------------------------
@@ -167,6 +177,19 @@ def build_parser() -> argparse.ArgumentParser:
     mn.add_argument("--events", type=int, default=2000)
     mn.add_argument("--seed", type=int, default=0)
     mn.set_defaults(func=_cmd_make_nano)
+
+    bn = sub.add_parser("bench", help="benchmark backends (awkward/hybrid/rdataframe)")
+    bn.add_argument("--root-file", default=DEFAULT_DIMUON)
+    bn.add_argument("--dataset", default="dimuon")
+    bn.add_argument("--backends", default="awkward,hybrid",
+                    help="comma-separated: awkward,hybrid,rdataframe")
+    bn.add_argument("--scale", type=int, default=1)
+    bn.add_argument("--repeats", type=int, default=5)
+    bn.add_argument("--hybrid-backend", choices=("server", "embedded"),
+                    default="embedded")
+    bn.add_argument("--dbdir", default=None)
+    _add_server_args(bn)
+    bn.set_defaults(func=_cmd_bench)
 
     return p
 
