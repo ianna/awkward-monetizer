@@ -36,3 +36,14 @@ def test_monetdb_backend_agrees(cms_root):
                                    hybrid_backend="embedded")
     assert md["metric"]["n"] == aw["metric"]["n"]
     assert abs(md["metric"]["mean"] - aw["metric"]["mean"]) < 1e-6
+
+
+def test_trijet_awkward_and_monetdb_agree(nano_file):
+    """ADL Q6 trijet: the in-DB SQL (self-join + UDFs + window) must match
+    ak.combinations."""
+    aw = benchmark.trijet_awkward(nano_file, repeats=1)
+    assert aw["metric"]["n"] > 0
+    if _has_monetdbe:
+        md = benchmark.trijet_monetdb(nano_file, repeats=1)
+        assert md["metric"]["n"] == aw["metric"]["n"]
+        assert abs(md["metric"]["mean"] - aw["metric"]["mean"]) < 1e-6

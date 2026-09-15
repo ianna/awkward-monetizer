@@ -229,6 +229,106 @@ def backend_rdataframe(root_file: str, dataset: str, repeats: int) -> dict:
             "metric": result}
 
 
+# ==========================================================================
+# ADL Q6 trijet — the contrast case (jagged combinatorics)
+# ==========================================================================
+# The whole Q6 selection in SQL: a 3-way self-join over jet triples (the
+# combinatorial blow-up that `ak.combinations(jets, 3)` expresses in one line),
+# the trijet mass/pT computed by UDFs, and a window function to pick, per event,
+# the triple whose mass is closest to 172.5 GeV.
+_TRIJET_SELECT_SQL = """SELECT pt FROM (
+  SELECT a.event_id,
+         trijet_pt(a.pt, a.phi, b.pt, b.phi, c.pt, c.phi) AS pt,
+         ROW_NUMBER() OVER (
+           PARTITION BY a.event_id
+           ORDER BY abs(trijet_mass(a.pt, a.eta, a.phi, a.mass,
+                                    b.pt, b.eta, b.phi, b.mass,
+                                    c.pt, c.eta, c.phi, c.mass) - 172.5)
+         ) AS rn
+  FROM jets a
+  JOIN jets b ON a.event_id = b.event_id AND a.jet_index < b.jet_index
+  JOIN jets c ON a.event_id = c.event_id AND b.jet_index < c.jet_index
+) ranked
+WHERE rn = 1"""
+
+
+def _arr_metric(a: np.ndarray) -> dict:
+    return {"n": int(a.size),
+            "mean": float(np.mean(a)) if a.size else float("nan")}
+
+
+def trijet_awkward(nano_file: str, repeats: int) -> dict:
+    """ADL Q6 in Awkward: setup reconstructs; query = ak.combinations + argmin."""
+    from .adl import events_from_root, q6_trijet_pt
+    events = None
+
+    def setup():
+        nonlocal events
+        events = events_from_root(nano_file)
+        return events
+
+    _, setup_t = timed(setup, repeats=1, warmup=0)
+    result, query_t = timed(lambda: q6_trijet_pt(events), repeats=repeats)
+    return {"setup": setup_t, "query": query_t, "metric": _arr_metric(result)}
+
+
+def trijet_monetdb(nano_file: str, repeats: int, hybrid_backend: str = "embedded",
+                   conn_kwargs: dict | None = None) -> dict:
+    """ADL Q6 in the database: 3-way self-join + UDFs + window function."""
+    from . import db
+    conn_kwargs = conn_kwargs or {}
+    ds = DATASETS["nanoaod"]
+    events_ak, _ = read_root(nano_file, ds, None)
+    tables = build_tables(events_ak, ds)
+
+    if hybrid_backend == "embedded":
+        conn = db.open_embedded(conn_kwargs.get("dbdir") or ":memory:")
+        use_copy = False
+    else:
+        conn = db.open_server(**{k: v for k, v in conn_kwargs.items()
+                                 if k != "dbdir"})
+        use_copy = True
+
+    def setup():
+        db.create_schema(conn, db.read_schema("nanoaod"))
+        load_tables(conn, tables, use_copy_into=use_copy)
+        db.load_functions(conn, db.read_schema("udf_trijet"))
+        return True
+
+    _, setup_t = timed(setup, repeats=1, warmup=0)
+
+    def query():
+        cur = conn.cursor()
+        cur.execute(_TRIJET_SELECT_SQL)
+        return np.array([r[0] for r in cur.fetchall()], dtype=float)
+
+    try:
+        result, query_t = timed(query, repeats=repeats)
+    finally:
+        conn.close()
+    return {"setup": setup_t, "query": query_t, "metric": _arr_metric(result)}
+
+
+def run_trijet(nano_file: str, *, backends=("awkward", "monetdb"), repeats: int = 5,
+               hybrid_backend: str = "embedded", conn_kwargs: dict | None = None,
+               rtol: float = 1e-6) -> dict:
+    """Run the Q6 trijet comparison (awkward vs in-DB SQL) and print a table."""
+    results: dict = {}
+    for name in backends:
+        print(f"running trijet backend: {name} ...")
+        if name == "awkward":
+            results[name] = trijet_awkward(nano_file, repeats)
+        elif name == "monetdb":
+            results[name] = trijet_monetdb(nano_file, repeats,
+                                           hybrid_backend=hybrid_backend,
+                                           conn_kwargs=conn_kwargs)
+        else:
+            raise ValueError(f"trijet analysis supports awkward/monetdb, not {name!r}")
+    _print_table(results)
+    _check_agreement(results, rtol)
+    return results
+
+
 BACKENDS = {
     "awkward": backend_awkward,
     "hybrid": backend_hybrid,

@@ -152,6 +152,29 @@ by a wide margin on this query. The embedded hybrid backend loads via `INSERT`
 (slow); use `--hybrid-backend server` (a real MonetDB server with `COPY INTO`) to
 benchmark a realistic load path.
 
+### When SQL wins vs when Awkward wins
+
+The harness ships two analyses (`--analysis`) that show the crossover:
+
+- `zmumu` (flat: two muons/event, a scalar mass) **favors the database** — the
+  in-DB `monetdb` backend runs the whole selection in SQL and beats
+  fetch-and-reconstruct.
+- `trijet` (ADL Q6, jagged: every 3-jet combination, keep the mass closest to
+  172.5 GeV) **favors Awkward** — `ak.combinations(jets, 3)` is one vectorized
+  line, whereas the SQL equivalent (`schemas/udf_trijet.sql`) needs two UDFs, a
+  3-way self-join over jet triples, and a window function — and runs *slower* on
+  the same data.
+
+```bash
+awkward-monetizer bench --analysis trijet --root-file data/nano_synth.root \\
+    --backends awkward,monetdb
+```
+
+The relational store is the right tool for columnar filtering, materialization,
+and scalar arithmetic; Awkward is the right tool for variable-length
+combinatorics and nested (NF2) physics. The point of the hybrid design is to use
+each where it wins, not to replace one with the other.
+
 ## Testing
 
 ```bash

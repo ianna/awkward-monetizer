@@ -127,5 +127,5 @@ All eight queries are implemented in `adl.py` (Awkward + scikit-hep `vector`) an
 ## Long-Term Vision
 - Distributed execution via Arrow Flight
 - GPU acceleration via CuPy + Awkward
-- MonetDB UDFs for physics math — started: SQL `dimuon_mass` UDF + in-database `monetdb` benchmark backend (dimuon); Python (LANGUAGE PYTHON) UDFs next
+- MonetDB UDFs for physics math — SQL UDFs: `dimuon_mass` (dimuon Z-mass) and `trijet_mass`/`trijet_pt` (ADL Q6). Benchmarks show the crossover: SQL wins the flat dimuon selection, Awkward wins the jagged trijet combinatorics. Python (LANGUAGE PYTHON) UDFs next.
 - Full replacement for ROOT/RDataFrame workflows

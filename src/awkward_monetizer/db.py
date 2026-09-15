@@ -65,6 +65,17 @@ def apply_sql(conn, sql_text: str, split: bool = True) -> None:
     conn.commit()
 
 
+def load_functions(conn, sql_text: str) -> None:
+    """Load one or more CREATE FUNCTION statements. Splits on the ``END;`` body
+    terminator (not ``;``, which appears inside function bodies)."""
+    text = re.sub(r"--[^\n]*", "", sql_text)
+    cur = conn.cursor()
+    for part in text.split("END;"):
+        if part.strip():
+            cur.execute(part.strip() + "\nEND;")
+    conn.commit()
+
+
 def create_schema(conn, sql_text: str,
                   drop: tuple[str, ...] = ("muons", "jets", "events")) -> None:
     """Drop the named tables (if present) and (re)create from ``sql_text``."""

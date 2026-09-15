@@ -116,13 +116,21 @@ def _cmd_make_nano(args) -> None:
 
 
 def _cmd_bench(args) -> None:
-    from .benchmark import run
     conn_kwargs = dict(database=args.database, host=args.host, port=args.port,
                        user=args.user, password=args.password, dbdir=args.dbdir)
     backends = tuple(b.strip() for b in args.backends.split(",") if b.strip())
-    run(args.root_file, dataset=args.dataset, backends=backends,
-        scale=args.scale, repeats=args.repeats,
-        hybrid_backend=args.hybrid_backend, conn_kwargs=conn_kwargs)
+    if args.analysis == "trijet":
+        from .benchmark import run_trijet
+        nano = args.root_file if args.root_file != DEFAULT_DIMUON else DEFAULT_NANO
+        # trijet has no `hybrid` backend; default to awkward vs in-DB SQL
+        bk = backends if args.backends != "awkward,hybrid" else ("awkward", "monetdb")
+        run_trijet(nano, backends=bk, repeats=args.repeats,
+                   hybrid_backend=args.hybrid_backend, conn_kwargs=conn_kwargs)
+    else:
+        from .benchmark import run
+        run(args.root_file, dataset=args.dataset, backends=backends,
+            scale=args.scale, repeats=args.repeats,
+            hybrid_backend=args.hybrid_backend, conn_kwargs=conn_kwargs)
 
 
 # --------------------------------------------------------------------------
@@ -181,6 +189,8 @@ def build_parser() -> argparse.ArgumentParser:
     bn = sub.add_parser("bench", help="benchmark backends (awkward/hybrid/rdataframe)")
     bn.add_argument("--root-file", default=DEFAULT_DIMUON)
     bn.add_argument("--dataset", default="dimuon")
+    bn.add_argument("--analysis", choices=("zmumu", "trijet"), default="zmumu",
+                    help="zmumu (dimuon) or trijet (ADL Q6, nanoaod)")
     bn.add_argument("--backends", default="awkward,hybrid",
                     help="comma-separated: awkward,hybrid,monetdb,rdataframe")
     bn.add_argument("--scale", type=int, default=1)
