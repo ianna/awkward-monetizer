@@ -1,0 +1,52 @@
+[workspace]
+name = "awkward-monetizer"
+description = "Hybrid HEP analysis engine: Awkward Array + MonetDB + Arrow, explored in Marimo"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+
+[dependencies]
+python = ">=3.10,<3.13"
+pip = "*"
+numpy = "*"
+pandas = "*"
+pyarrow = "*"
+pymonetdb = "*"    # MonetDB Python client (server installed separately, see README)
+marimo = "*"       # reactive notebooks
+matplotlib = "*"   # plotting
+mplhep = "*"       # HEP plot styling
+hist = "*"         # histogramming
+vector = "*"       # Lorentz-vector math (scikit-hep)
+pytest = "*"       # test runner
+
+[pypi-dependencies]
+# Awkward built from a local GitHub checkout at ./awkward (clone --recursive).
+awkward-cpp = { path = "awkward/awkward-cpp" }
+awkward = { path = "awkward", editable = true }
+uproot = "*"
+# The project itself, editable, so the `awkward-monetizer` CLI is on PATH.
+awkward-monetizer = { path = ".", editable = true }
+
+# Pin the macOS deployment target for source builds (awkward-cpp) so the wheel
+# is tagged macosx_11_0 to match conda-forge's Python (not the host OS version).
+[target.osx-arm64.activation.env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
+
+[target.osx-64.activation.env]
+MACOSX_DEPLOYMENT_TARGET = "10.13"
+
+[tasks]
+# Confirm awkward came from the local source (path resolves into ./awkward)
+check-awkward = "python -c \"import awkward as ak; from importlib.metadata import version; print('awkward', ak.__version__, '| awkward-cpp', version('awkward-cpp'), '| file:', ak.__file__)\""
+# ROOT -> flat tables (dry run, no DB)
+ingest-dryrun = "awkward-monetizer ingest data/cms.root --dry-run"
+# Flat tables -> Awkward NF2 + validate dimuon mass (no DB)
+reconstruct-demo = "awkward-monetizer reconstruct data/cms.root"
+# Full live round-trip through a running MonetDB server
+roundtrip = "awkward-monetizer roundtrip --root-file data/cms.root"
+# Generate a synthetic NanoAOD file, then run the ADL Q1-Q8 benchmark
+make-nano = "awkward-monetizer make-nano"
+adl = "awkward-monetizer adl"
+# Launch the analysis notebook
+notebook = "marimo edit examples/analysis.py"
+# Run the test suite
+test = "pytest"

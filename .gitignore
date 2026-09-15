@@ -1,0 +1,50 @@
+# --- Data (not committed; see data/README.md) ---
+/data/*.root
+*.root
+*.csv
+*.parquet
+*.arrow
+*.dbfarm/
+hep-dbfarm/
+
+# --- Local awkward source checkout (built via pixi path deps) ---
+/awkward/
+
+# --- pixi ---
+/.pixi/
+# Remove the next line to commit the lockfile for reproducibility.
+pixi.lock
+
+# --- Python / packaging ---
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+src/*/_version.py
+
+# --- Test / tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# --- Notebooks / outputs ---
+.ipynb_checkpoints/
+__marimo__/
+*.png
+
+# --- Cowork desktop app ---
+/Claude outputs/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+*.swp
