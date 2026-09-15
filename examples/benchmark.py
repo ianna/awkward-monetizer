@@ -16,7 +16,7 @@ def main() -> None:
     p.add_argument("--root-file", default="data/cms.root")
     p.add_argument("--dataset", default="dimuon")
     p.add_argument("--backends", default="awkward,hybrid",
-                   help="comma-separated: awkward,hybrid,rdataframe")
+                   help="comma-separated: awkward,hybrid,monetdb,rdataframe")
     p.add_argument("--scale", type=int, default=1)
     p.add_argument("--repeats", type=int, default=5)
     p.add_argument("--hybrid-backend", default="embedded",

@@ -129,6 +129,10 @@ Python; if a build is rejected as `macosx_15_0` incompatible, run
 - **awkward** — pure Awkward (uproot read → reconstruct → analyze in memory)
 - **hybrid** — MonetDB + Awkward: data pre-loaded, the event cut pushed to SQL,
   survivors reconstructed and finished in Awkward
+- **monetdb** — the *whole* selection in SQL via a `dimuon_mass` user-defined
+  function (`schemas/udf_dimuon.sql`): self-join the two muons per event, compute
+  the mass and filter in-database, return only the surviving masses — no Awkward
+  reconstruction. Runs on a server or embedded `monetdbe`.
 - **rdataframe** — ROOT `RDataFrame` (gated: runs only if `import ROOT` works)
 
 `--scale K` tiles the input into a K× larger physical ROOT file every backend
@@ -142,7 +146,9 @@ awkward-monetizer bench --root-file data/cms.root --scale 50 \\
 ```
 
 The backends cross-check on selected-event count and mean mass (the harness prints
-`agreement across backends: OK`). The embedded hybrid backend loads via `INSERT`
+`agreement across backends: OK`). Pushing the physics into the database with the UDF (`monetdb` backend) returns
+only the final selection, so it can beat the fetch-and-reconstruct `hybrid` path
+by a wide margin on this query. The embedded hybrid backend loads via `INSERT`
 (slow); use `--hybrid-backend server` (a real MonetDB server with `COPY INTO`) to
 benchmark a realistic load path.
 

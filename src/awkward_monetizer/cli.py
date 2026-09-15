@@ -182,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     bn.add_argument("--root-file", default=DEFAULT_DIMUON)
     bn.add_argument("--dataset", default="dimuon")
     bn.add_argument("--backends", default="awkward,hybrid",
-                    help="comma-separated: awkward,hybrid,rdataframe")
+                    help="comma-separated: awkward,hybrid,monetdb,rdataframe")
     bn.add_argument("--scale", type=int, default=1)
     bn.add_argument("--repeats", type=int, default=5)
     bn.add_argument("--hybrid-backend", choices=("server", "embedded"),

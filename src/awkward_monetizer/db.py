@@ -52,6 +52,19 @@ def split_statements(sql: str) -> list[str]:
     return [s.strip() for s in no_comments.split(";") if s.strip()]
 
 
+def apply_sql(conn, sql_text: str, split: bool = True) -> None:
+    """Execute a SQL script (e.g. a UDF definition). With split=False the whole
+    comment-stripped text runs as one statement — needed for CREATE FUNCTION,
+    whose body contains its own semicolons."""
+    cur = conn.cursor()
+    if split:
+        for stmt in split_statements(sql_text):
+            cur.execute(stmt)
+    else:
+        cur.execute(re.sub(r"--[^\n]*", "", sql_text).strip())
+    conn.commit()
+
+
 def create_schema(conn, sql_text: str,
                   drop: tuple[str, ...] = ("muons", "jets", "events")) -> None:
     """Drop the named tables (if present) and (re)create from ``sql_text``."""

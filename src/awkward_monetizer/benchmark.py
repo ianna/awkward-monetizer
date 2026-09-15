@@ -87,6 +87,18 @@ def zmumu_masses(events: ak.Array) -> np.ndarray:
     return ak.to_numpy(m[mask])
 
 
+# Whole Z→μμ selection expressed in SQL, using the dimuon_mass UDF: self-join the
+# two muons per event, compute the mass in-database, keep opposite-charge pairs in
+# the Z window. Returns just the surviving masses.
+_DIMUON_SELECT_SQL = """SELECT m FROM (
+  SELECT dimuon_mass(a.e, a.px, a.py, a.pz, b.e, b.px, b.py, b.pz) AS m,
+         a.charge AS qa, b.charge AS qb
+  FROM muons a JOIN muons b
+    ON a.event_id = b.event_id AND a.muon_index = 0 AND b.muon_index = 1
+) t
+WHERE qa <> qb AND m BETWEEN 60 AND 120"""
+
+
 def _metric(masses: np.ndarray) -> dict:
     return {"n": int(masses.size),
             "mean": float(np.mean(masses)) if masses.size else float("nan")}
@@ -151,6 +163,50 @@ def backend_hybrid(root_file: str, dataset: str, repeats: int,
     return {"setup": setup_t, "query": query_t, "metric": _metric(result)}
 
 
+def backend_monetdb(root_file: str, dataset: str, repeats: int,
+                    hybrid_backend: str = "embedded",
+                    conn_kwargs: dict | None = None) -> dict:
+    """Whole analysis in the database via a SQL UDF — no Awkward reconstruction.
+
+    setup ingests + loads + defines the `dimuon_mass` UDF; query runs the entire
+    Z→μμ selection in SQL and fetches only the surviving masses.
+    """
+    if dataset != "dimuon":
+        raise ValueError("the monetdb (in-DB UDF) backend is dimuon-only")
+    from . import db
+    conn_kwargs = conn_kwargs or {}
+    ds = DATASETS[dataset]
+    events_ak, _ = read_root(root_file, ds, None)
+    tables = build_tables(events_ak, ds)
+
+    if hybrid_backend == "embedded":
+        conn = db.open_embedded(conn_kwargs.get("dbdir") or ":memory:")
+        use_copy = False
+    else:
+        conn = db.open_server(**{k: v for k, v in conn_kwargs.items()
+                                 if k != "dbdir"})
+        use_copy = True
+
+    def setup():
+        db.create_schema(conn, db.read_schema("dimuon"))
+        load_tables(conn, tables, use_copy_into=use_copy)
+        db.apply_sql(conn, db.read_schema("udf_dimuon"), split=False)
+        return True
+
+    _, setup_t = timed(setup, repeats=1, warmup=0)
+
+    def query():
+        cur = conn.cursor()
+        cur.execute(_DIMUON_SELECT_SQL)
+        return np.array([r[0] for r in cur.fetchall()], dtype=float)
+
+    try:
+        result, query_t = timed(query, repeats=repeats)
+    finally:
+        conn.close()
+    return {"setup": setup_t, "query": query_t, "metric": _metric(result)}
+
+
 def backend_rdataframe(root_file: str, dataset: str, repeats: int) -> dict:
     """ROOT RDataFrame computing the same Z→μμ selection. Requires ROOT."""
     import ROOT  # noqa: F401 — only imported when this backend is requested
@@ -176,6 +232,7 @@ def backend_rdataframe(root_file: str, dataset: str, repeats: int) -> dict:
 BACKENDS = {
     "awkward": backend_awkward,
     "hybrid": backend_hybrid,
+    "monetdb": backend_monetdb,
     "rdataframe": backend_rdataframe,
 }
 
@@ -199,8 +256,9 @@ def run(root_file: str, *, dataset: str = "dimuon",
     for name in backends:
         print(f"running backend: {name} ...")
         try:
-            if name == "hybrid":
-                results[name] = backend_hybrid(
+            if name in ("hybrid", "monetdb"):
+                fn = backend_hybrid if name == "hybrid" else backend_monetdb
+                results[name] = fn(
                     root_file, dataset, repeats,
                     hybrid_backend=hybrid_backend, conn_kwargs=conn_kwargs)
             else:

@@ -127,5 +127,5 @@ All eight queries are implemented in `adl.py` (Awkward + scikit-hep `vector`) an
 ## Long-Term Vision
 - Distributed execution via Arrow Flight
 - GPU acceleration via CuPy + Awkward
-- MonetDB UDFs for physics math
+- MonetDB UDFs for physics math — started: SQL `dimuon_mass` UDF + in-database `monetdb` benchmark backend (dimuon); Python (LANGUAGE PYTHON) UDFs next
 - Full replacement for ROOT/RDataFrame workflows
