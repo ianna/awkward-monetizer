@@ -8,7 +8,8 @@ A hybrid High-Energy Physics (HEP) analysis engine that combines:
 
 [Apache Arrow](https://arrow.apache.org/) is a dependency and a planned transport
 integration; the current database path uses pandas with CSV `COPY INTO` or SQL
-`INSERT` for loading and DB-API rows for fetching.
+`INSERT` for loading and DB-API rows for fetching. The dimuon hybrid benchmark
+converts fetched rows directly to typed NumPy and Awkward arrays.
 
 Interactive exploration is done in [Marimo](https://marimo.io/) notebooks; the aim
 is a Python-native alternative to [ROOT/RDataFrame](https://root.cern/doc/master/classROOT_1_1RDataFrame.html).
@@ -179,6 +180,19 @@ separately, but timing boundaries differ: Awkward setup includes reading and
 reconstruction; database setup excludes the preceding ROOT read and flattening;
 RDataFrame reads the file during its query. Interpret the results with those
 differences in mind. Trijet analysis does not apply `--scale`.
+
+The hybrid benchmark also reports median query-stage times for `execute`,
+`fetch`, `column_arrays`, `sort_group`, `array_build`, and `analysis`, excluding
+warmup. Execute/fetch measure client calls: the driver may receive some rows
+during execute, so these are not isolated server and network timings. Stage
+medians need not sum to the overall median. Hybrid selection uses a SQL join
+and fetches only the event ID and muon fields required for dimuon analysis.
+Typed NumPy conversion bypasses pandas dtype inference and groupby; sorting is
+only performed when the returned rows are not already ordered. Contiguous muon
+columns feed the same Awkward mass calculation. The general-purpose
+`fetch_tables` API still returns pandas DataFrames.
+The ROOT backend books count and mean together to compute both in one event
+loop per query.
 
 ```bash
 awkward-monetizer bench --root-file data/cms.root --scale 50 \

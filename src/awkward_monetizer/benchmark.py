@@ -31,7 +31,8 @@ import uproot
 from .datasets import DATASETS
 from .ingest import build_tables, load_tables, read_root
 from .physics import invariant_mass, opposite_charge_pair
-from .reconstruct import fetch_tables, reconstruct_events
+from .reconstruct import fetch_dimuon_events, reconstruct_events
+from .timing import stage_time
 
 
 # --------------------------------------------------------------------------
@@ -129,6 +130,8 @@ def backend_hybrid(root_file: str, dataset: str, repeats: int,
                    conn_kwargs: dict | None = None,
                    where: str = "mass BETWEEN 60 AND 120") -> dict:
     """MonetDB + Awkward: setup ingests+loads; query = SQL slice + reconstruct."""
+    if dataset != "dimuon":
+        raise ValueError("the hybrid dimuon analysis requires the dimuon dataset")
     from . import db
     conn_kwargs = conn_kwargs or {}
     ds = DATASETS[dataset]
@@ -150,17 +153,30 @@ def backend_hybrid(root_file: str, dataset: str, repeats: int,
         load_tables(conn, tables, use_copy_into=use_copy)
         return True
 
-    _, setup_t = timed(setup, repeats=1, warmup=0)
+    samples = []
 
     def query():
-        events_df, muons_df = fetch_tables(conn, where=where)
-        return zmumu_masses(reconstruct_events(events_df, muons_df))
+        stages = {}
+        events = fetch_dimuon_events(conn, where=where, timings=stages)
+        with stage_time(stages, "analysis"):
+            masses = zmumu_masses(events)
+        samples.append(stages)
+        return masses
 
     try:
-        result, query_t = timed(query, repeats=repeats)
+        _, setup_t = timed(setup, repeats=1, warmup=0)
+        query()  # Warm up without including it in stage statistics.
+        samples.clear()
+        result, query_t = timed(query, repeats=repeats, warmup=0)
     finally:
         conn.close()
-    return {"setup": setup_t, "query": query_t, "metric": _metric(result)}
+    stages = {
+        key: {"median": statistics.median(s[key] for s in samples),
+              "min": min(s[key] for s in samples), "n": len(samples)}
+        for key in samples[0]
+    }
+    return {"setup": setup_t, "query": query_t, "metric": _metric(result),
+            "stages": stages}
 
 
 def backend_monetdb(root_file: str, dataset: str, repeats: int,
@@ -220,8 +236,10 @@ def backend_rdataframe(root_file: str, dataset: str, repeats: int) -> dict:
         df = (df.Define("m_mumu", mass_expr)
                 .Filter("Q1 != Q2")
                 .Filter("m_mumu > 60 && m_mumu < 120"))
-        n = df.Count().GetValue()
-        mean = df.Mean("m_mumu").GetValue() if n else float("nan")
+        count_action = df.Count()
+        mean_action = df.Mean("m_mumu")
+        n = count_action.GetValue()
+        mean = mean_action.GetValue() if n else float("nan")
         return {"n": int(n), "mean": float(mean)}
 
     result, query_t = timed(query, repeats=repeats)
@@ -390,6 +408,15 @@ def _print_table(results: dict) -> None:
         print(f"{name:<12} {setup:>10.3f} {qms:>18.3f} "
               f"{r['metric']['n']:>8d} {r['metric']['mean']:>10.4f}")
     print("=" * 74)
+
+    for name, result in results.items():
+        if "stages" not in result:
+            continue
+        print(f"\n{name} query stages (median ms; warmup excluded):")
+        for stage, timing in result["stages"].items():
+            print(f"  {stage:<16} {timing['median'] * 1e3:>10.3f}")
+        print("  execute/fetch are client-call timings, not isolated server timings.")
+        print("  Stage medians need not sum to the total query median.")
 
 
 def _check_agreement(results: dict, rtol: float) -> None:
