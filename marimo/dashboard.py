@@ -1,180 +1,91 @@
-# marimo: dashboard.py
 import marimo
 
-app = marimo.App()
+app = marimo.App(width="medium")
 
-# ------------------------------------------------------------
-# Imports
-# ------------------------------------------------------------
-@app.cell
-def imports():
-    import pymonetdb
-    import awkward as ak
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    import numpy as np
-    return pymonetdb, ak, pa, pq, np
 
-# ------------------------------------------------------------
-# Database connection
-# ------------------------------------------------------------
 @app.cell
-def connect(pymonetdb):
-    conn = pymonetdb.connect(database="hep")
-    cur = conn.cursor()
-    cur
-
-# ------------------------------------------------------------
-# Dashboard Controls
-# ------------------------------------------------------------
-@app.cell
-def controls():
+def _():
     import marimo as mo
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
 
-    analysis = mo.ui.dropdown(
-        label="Select analysis",
-        options=[
-            "Q4: ≥2 jets with pt > 40",
-            "Q6: Trijet closest to 172.5 GeV",
-            "Q7: ΔR lepton veto",
-            "Q8: Z-like lepton pair + MT",
-        ],
-        value="Q4: ≥2 jets with pt > 40",
+    from awkward_monetizer import adl
+    from awkward_monetizer.db import open_server
+    from awkward_monetizer.reconstruct import reconstruct_multi
+    return adl, mo, np, open_server, pd, plt, reconstruct_multi
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+        # ADL dashboard — MonetDB → Awkward
+
+        Pick an ADL query; the plot updates reactively. Reads the `nanoaod` tables
+        from the running MonetDB **`hep`** server, rebuilds the nested event
+        structure with `reconstruct_multi`, and runs the validated `adl` query
+        (no `ak.group_by`, real invariant mass / ΔR / transverse mass). Populate
+        the DB first: `awkward-monetizer ingest nano.root --dataset nanoaod
+        --database hep --create-schema`.
+        """
     )
+    return
 
-    run_button = mo.ui.button("Run analysis")
 
-    analysis, run_button
-
-# ------------------------------------------------------------
-# Load events (Arrow → Awkward)
-# ------------------------------------------------------------
 @app.cell
-def load_events(cur, pa, ak):
-    cur.execute("SELECT event_id, met_pt, met_phi FROM events")
-    rows = cur.fetchall()
-    table = pa.Table.from_pylist(rows)
-    events = ak.from_arrow(table)
-    events
+def _(open_server, pd, reconstruct_multi):
+    conn = open_server(database="hep")
 
-# ------------------------------------------------------------
-# Load jets (Arrow → Awkward)
-# ------------------------------------------------------------
+    def fetch(sql):
+        cur = conn.cursor()
+        cur.execute(sql)
+        return pd.DataFrame(cur.fetchall(),
+                            columns=[c[0] for c in cur.description])
+
+    # Reconstruct once; every query below reuses this jagged `events` array.
+    events = reconstruct_multi(
+        fetch("SELECT * FROM events"),
+        {"jets": fetch("SELECT * FROM jets ORDER BY event_id, jet_index"),
+         "muons": fetch("SELECT * FROM muons ORDER BY event_id, muon_index")},
+    )
+    return conn, events, fetch
+
+
 @app.cell
-def load_jets(cur, pa, ak):
-    cur.execute("SELECT event_id, jet_index, pt, eta, phi, mass FROM jets")
-    rows = cur.fetchall()
-    table = pa.Table.from_pylist(rows)
-    jets = ak.from_arrow(table)
-    jets
+def _(adl, mo):
+    # label -> (adl function, x-axis label, histogram upper edge)
+    ANALYSES = {
+        "Q4: MET, ≥2 jets pT>40":   (adl.q4_met_ge2jets40, "MET [GeV]", 200),
+        "Q6: trijet pT (m~172.5)":  (adl.q6_trijet_pt, "trijet pT [GeV]", 400),
+        "Q7: HT of cleaned jets":   (adl.q7_ht_cleaned, "HT [GeV]", 600),
+        "Q8: MT(MET, lead lepton)": (adl.q8_mt_met_lepton, r"$M_T$ [GeV]", 200),
+    }
+    choice = mo.ui.dropdown(options=list(ANALYSES),
+                            value="Q4: MET, ≥2 jets pT>40", label="Analysis")
+    choice
+    return ANALYSES, choice
 
-# ------------------------------------------------------------
-# Load leptons (Arrow → Awkward)
-# ------------------------------------------------------------
+
 @app.cell
-def load_leptons(cur, pa, ak):
-    try:
-        cur.execute("SELECT event_id, lep_index, pt, eta, phi, charge FROM leptons")
-        rows = cur.fetchall()
-        table = pa.Table.from_pylist(rows)
-        leps = ak.from_arrow(table)
-    except:
-        leps = ak.Array([])
-    leps
+def _(ANALYSES, choice, events, mo, np, plt):
+    fn, xlabel, hi = ANALYSES[choice.value]
+    result = fn(events)
 
-# ------------------------------------------------------------
-# Group jets & leptons by event
-# ------------------------------------------------------------
-@app.cell
-def group_objects(jets, load_leptons, ak):
-    jets_g = ak.group_by(jets, "event_id")
-    jets_by_event = jets_g["values"]
-    event_ids = jets_g["keys"]["event_id"]
+    fig, ax = plt.subplots(figsize=(7, 4))
+    if result.size:
+        ax.hist(result, bins=50, range=(0, hi), histtype="stepfilled",
+                color="#3b6fb6", alpha=0.85, edgecolor="#26456e")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("events")
+    ax.set_title(choice.value)
+    fig.tight_layout()
 
-    if len(load_leptons) > 0:
-        leps_g = ak.group_by(load_leptons, "event_id")
-        leps_by_event = leps_g["values"]
-    else:
-        leps_by_event = ak.Array([])
+    summary = (f"**{result.size:,}** events (mean {np.mean(result):.1f})"
+               if result.size else "no events")
+    mo.vstack([mo.md(summary), fig])
+    return ax, fig, fn, hi, result, summary, xlabel
 
-    jets_by_event, leps_by_event, event_ids
 
-# ------------------------------------------------------------
-# Physics helpers
-# ------------------------------------------------------------
-@app.cell
-def physics_helpers(np):
-    def delta_r(j, l):
-        return np.sqrt((j.eta - l.eta)**2 + (j.phi - l.phi)**2)
-
-    def invariant_mass_trijet(j):
-        return ak.sum(j.mass, axis=-1)
-
-    delta_r, invariant_mass_trijet
-
-# ------------------------------------------------------------
-# Unified Analysis Logic
-# ------------------------------------------------------------
-@app.cell
-def run_analysis(analysis, run_button, jets_by_event, leps_by_event, event_ids,
-                 physics_helpers, ak, np, load_events):
-    if not run_button.value:
-        return "Select an analysis and press Run."
-
-    delta_r, invariant_mass_trijet = physics_helpers
-
-    if analysis.value.startswith("Q4"):
-        good = jets_by_event.pt > 40
-        n_good = ak.sum(good, axis=1)
-        selected = event_ids[n_good >= 2]
-        return selected
-
-    if analysis.value.startswith("Q6"):
-        trijets = ak.combinations(jets_by_event, 3, axis=1)
-        masses = invariant_mass_trijet(trijets)
-        best_idx = ak.argmin(abs(masses - 172.5), axis=1)
-        best = trijets[best_idx]
-        return best
-
-    if analysis.value.startswith("Q7"):
-        if len(leps_by_event) == 0:
-            return "No leptons table found."
-
-        jets30 = jets_by_event.pt > 30
-        leps10 = leps_by_event.pt > 10
-
-        dr_matrix = delta_r(
-            jets_by_event[:, None],
-            leps_by_event[None, :]
-        )
-
-        veto = ak.any(dr_matrix < 0.4, axis=-1)
-        good_jets = jets30 & (~veto)
-
-        ht = ak.sum(jets_by_event.pt * good_jets, axis=1)
-        return ht
-
-    if analysis.value.startswith("Q8"):
-        if len(leps_by_event) == 0:
-            return "No leptons table found."
-
-        pairs = ak.combinations(leps_by_event, 2, axis=1)
-        opp = pairs["0"].charge != pairs["1"].charge
-        mass = ak.sum(pairs["0"].pt + pairs["1"].pt, axis=-1)
-        best = ak.argmin(abs(mass - 91.2), axis=1)
-
-        max_lep = ak.argmax(leps_by_event.pt, axis=1)
-        mt = load_events.met_pt + leps_by_event.pt[max_lep]
-        return mt
-
-    return "Unknown analysis."
-
-# ------------------------------------------------------------
-# Output
-# ------------------------------------------------------------
-@app.cell
-def output(run_analysis):
-    run_analysis
-
-app.run()
-
+if __name__ == "__main__":
+    app.run()
