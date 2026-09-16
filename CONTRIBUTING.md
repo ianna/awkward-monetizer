@@ -86,5 +86,27 @@ Large design changes should be proposed before implementation.
 
 ---
 
+## Releases
+
+Package versions come from Git tags through `hatch-vcs`; do not add a static
+`project.version` to `pyproject.toml`. A clean checkout at `v0.1.1` builds version
+`0.1.1`. Untagged commits and modified checkouts produce development versions.
+Build from a Git clone with tags available, or from a generated source
+distribution.
+
+To prepare a release, commit and push the intended changes, then publish a GitHub
+release with a new `vX.Y.Z` tag pointing at that commit. Do not reuse a published
+version. The `release.yml` workflow builds and tests the wheel, checks that its
+version matches the release tag, and publishes to PyPI. Pushing a tag alone does
+not trigger publishing.
+
+Configure the PyPI Trusted Publisher with owner `ianna`, repository
+`awkward-monetizer`, workflow filename `release.yml`, and environment `pypi`.
+Create the matching `pypi` environment in the GitHub repository settings. No PyPI
+API-token secret is needed. Both CI and release workflows fetch full Git history
+and tags so version discovery works.
+
+---
+
 ## License
 By contributing, you agree that your contributions will be licensed under the project's license (MIT or BSD-3).

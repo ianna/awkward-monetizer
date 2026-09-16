@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "awkward-monetizer"
-version = "0.1.0"                     # switch to hatch-vcs once the repo is tagged
+dynamic = ["version"]
 description = "Hybrid HEP analysis engine: Awkward Array + MonetDB + Apache Arrow"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,6 +32,9 @@ awkward-monetizer = "awkward_monetizer.cli:main"
 [project.urls]
 Homepage = "https://github.com/ianna/awkward-monetizer"
 Issues = "https://github.com/ianna/awkward-monetizer/issues"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/awkward_monetizer"]
