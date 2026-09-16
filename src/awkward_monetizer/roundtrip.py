@@ -31,7 +31,7 @@ def run(*, root_file: str, dataset: str = "dimuon", backend: str = "server",
     ds = DATASETS[dataset]
 
     print(f"[1/5] ingest {root_file} (dataset={ds.name}) ...")
-    events_ak, tree = read_root(root_file, ds, None)
+    events_ak, _tree = read_root(root_file, ds, None)
     tables = build_tables(events_ak, ds)
     for name, df in tables.items():
         print(f"      {name}: {len(df)} rows")

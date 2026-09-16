@@ -8,11 +8,11 @@ vector.register_awkward()
 
 
 def _muon(pt, phi, q, eta=0.0):
-    return dict(pt=pt, eta=eta, phi=phi, mass=0.10566, charge=q)
+    return {"pt": pt, "eta": eta, "phi": phi, "mass": 0.10566, "charge": q}
 
 
 def _jet(pt, eta, phi, mass=5.0):
-    return dict(pt=pt, eta=eta, phi=phi, mass=mass)
+    return {"pt": pt, "eta": eta, "phi": phi, "mass": mass}
 
 
 def test_q8_matches_hand_calculation():

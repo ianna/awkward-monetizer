@@ -76,7 +76,7 @@ def tables_from_root(root_file: str, dataset: str = "dimuon",
     Returns ``(events_df, muons_df)`` for the single-muon-collection datasets;
     for datasets with more collections use :func:`tables_dict_from_root`.
     """
-    events_df, tables = tables_dict_from_root(root_file, dataset, tree)
+    _events_df, tables = tables_dict_from_root(root_file, dataset, tree)
     return tables["events"], tables["muons"]
 
 

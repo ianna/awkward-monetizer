@@ -61,7 +61,7 @@ class Dataset:
             else:  # WideCollection
                 for tmpl in c.branches.values():
                     names.extend(tmpl.format(s) for s in c.slots)
-        for col, kind, ref in self.derived:
+        for _col, kind, ref in self.derived:
             if kind == "count":
                 names.append(ref)
         seen, out = set(), []

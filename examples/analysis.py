@@ -111,7 +111,7 @@ def _(ak, charge_only, events, invariant_mass, np, opposite_charge_pair, pt_cut)
 def _(charge_only, mass_sel, mo, n_sel, plt, pt_cut):
     fig, (ax_full, ax_z) = plt.subplots(1, 2, figsize=(12, 4.5))
     for ax, (lo, hi, title) in zip(
-        (ax_full, ax_z), [(0, 120, "Full range"), (60, 120, "Z region")]
+        (ax_full, ax_z), [(0, 120, "Full range"), (60, 120, "Z region")], strict=False
     ):
         ax.hist(mass_sel, bins=100, range=(lo, hi),
                 histtype="stepfilled", color="#3b6fb6", alpha=0.85,

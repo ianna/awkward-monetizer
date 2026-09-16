@@ -97,8 +97,8 @@ def _cmd_reconstruct(args) -> None:
 
 def _cmd_roundtrip(args) -> None:
     from .roundtrip import run
-    conn_kwargs = dict(database=args.database, host=args.host, port=args.port,
-                       user=args.user, password=args.password, dbdir=args.dbdir)
+    conn_kwargs = {"database": args.database, "host": args.host, "port": args.port,
+                       "user": args.user, "password": args.password, "dbdir": args.dbdir}
     run(root_file=args.root_file, dataset=args.dataset, backend=args.backend,
         where=args.where, use_copy_into=not args.no_copy_into,
         conn_kwargs=conn_kwargs)
@@ -126,7 +126,7 @@ def _cmd_adl(args) -> None:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(2, 4, figsize=(18, 8))
-        for ax, (name, arr) in zip(axes.ravel(), results.items()):
+        for ax, (name, arr) in zip(axes.ravel(), results.items(), strict=False):
             if arr.size:
                 ax.hist(arr, bins=40, histtype="stepfilled",
                         color="#3b6fb6", alpha=0.85, edgecolor="#26456e")
@@ -146,8 +146,8 @@ def _cmd_make_nano(args) -> None:
 
 
 def _cmd_bench(args) -> None:
-    conn_kwargs = dict(database=args.database, host=args.host, port=args.port,
-                       user=args.user, password=args.password, dbdir=args.dbdir)
+    conn_kwargs = {"database": args.database, "host": args.host, "port": args.port,
+                       "user": args.user, "password": args.password, "dbdir": args.dbdir}
     backends = tuple(b.strip() for b in args.backends.split(",") if b.strip())
     if args.analysis == "trijet":
         from .benchmark import run_trijet
