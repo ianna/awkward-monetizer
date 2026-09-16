@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.24.2"
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 
@@ -23,10 +23,10 @@ def _():
         reconstruct_events,
         tables_from_root,
     )
+
     return (
         ak,
         fetch_from_monetdb,
-        hep,
         invariant_mass,
         mo,
         np,
@@ -39,19 +39,18 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        # Dimuon analysis — Awkward + MonetDB round-trip
+    mo.md(r"""
+    # Dimuon analysis — Awkward + MonetDB round-trip
 
-        1. **Ingest** `data/cms.root` into flat tables (`events`, `muons`).
-        2. **Reconstruct** the per-event nested (NF2) structure (`ak.unflatten`).
-        3. **Analyze**: dimuon invariant mass, validated against the file's `M`,
-           and the Z→μμ spectrum.
+    1. **Ingest** `data/cms.root` into flat tables (`events`, `muons`).
+    2. **Reconstruct** the per-event nested (NF2) structure (`ak.unflatten`).
+    3. **Analyze**: dimuon invariant mass, validated against the file's `M`,
+       and the Z→μμ spectrum.
 
-        Set `SOURCE = "monetdb"` (after loading the schema and running ingest) to
-        use the SQL round-trip instead of reading the file directly.
-        """
-    )
+    Set `SOURCE = "monetdb"` (after loading the schema and running ingest) to
+    use the SQL round-trip instead of reading the file directly.
+    """)
+    return
 
 
 @app.cell
@@ -66,7 +65,7 @@ def _(fetch_from_monetdb, reconstruct_events, tables_from_root):
         events_df, muons_df = tables_from_root("data/cms.root", "dimuon")
 
     events = reconstruct_events(events_df, muons_df)
-    return SOURCE, events, events_df, muons_df
+    return events, events_df, muons_df
 
 
 @app.cell
@@ -75,6 +74,7 @@ def _(events_df, mo, muons_df):
         f"Loaded **{len(events_df):,}** events and **{len(muons_df):,}** muons; "
         f"reconstructed into a jagged `events.muons` array."
     )
+    return
 
 
 @app.cell
@@ -86,6 +86,7 @@ def _(ak, events, invariant_mass, mo, np):
         f"**Validation** — reconstructed m(μμ) vs stored `M`: "
         f"max |Δ| = `{_max:.2e}` GeV across {len(_recon):,} events. ✓"
     )
+    return
 
 
 @app.cell
@@ -97,7 +98,15 @@ def _(mo):
 
 
 @app.cell
-def _(ak, charge_only, events, invariant_mass, np, opposite_charge_pair, pt_cut):
+def _(
+    ak,
+    charge_only,
+    events,
+    invariant_mass,
+    np,
+    opposite_charge_pair,
+    pt_cut,
+):
     _both_pt = ak.all(events.muons.pt > pt_cut.value, axis=1)
     _sel = _both_pt
     if charge_only.value:
@@ -127,7 +136,7 @@ def _(charge_only, mass_sel, mo, n_sel, plt, pt_cut):
     _cut = f"both muons pT > {pt_cut.value} GeV"
     _q = "opposite-charge, " if charge_only.value else ""
     mo.vstack([mo.md(f"**{n_sel:,}** selected events ({_q}{_cut})"), fig])
-    return ax_full, ax_z, fig
+    return
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import marimo
 
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 
@@ -13,23 +14,23 @@ def _():
     from awkward_monetizer import adl
     from awkward_monetizer.db import open_server
     from awkward_monetizer.reconstruct import reconstruct_multi
+
     return adl, mo, np, open_server, pd, plt, reconstruct_multi
 
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        # ADL dashboard — MonetDB → Awkward
+    mo.md(r"""
+    # ADL dashboard — MonetDB → Awkward
 
-        Pick an ADL query; the plot updates reactively. Reads the `nanoaod` tables
-        from the running MonetDB **`hep`** server, rebuilds the nested event
-        structure with `reconstruct_multi`, and runs the validated `adl` query
-        (no `ak.group_by`, real invariant mass / ΔR / transverse mass). Populate
-        the DB first: `awkward-monetizer ingest nano.root --dataset nanoaod
-        --database hep --create-schema`.
-        """
-    )
+    Pick an ADL query; the plot updates reactively. Reads the `nanoaod` tables
+    from the running MonetDB **`hep`** server, rebuilds the nested event
+    structure with `reconstruct_multi`, and runs the validated `adl` query
+    (no `ak.group_by`, real invariant mass / ΔR / transverse mass). Populate
+    the DB first: `awkward-monetizer ingest nano.root --dataset nanoaod
+    --database hep --create-schema`.
+    """)
+    return
 
 
 @app.cell
@@ -48,7 +49,7 @@ def _(open_server, pd, reconstruct_multi):
         {"jets": fetch("SELECT * FROM jets ORDER BY event_id, jet_index"),
          "muons": fetch("SELECT * FROM muons ORDER BY event_id, muon_index")},
     )
-    return conn, events, fetch
+    return (events,)
 
 
 @app.cell
@@ -83,7 +84,7 @@ def _(ANALYSES, choice, events, mo, np, plt):
     summary = (f"**{result.size:,}** events (mean {np.mean(result):.1f})"
                if result.size else "no events")
     mo.vstack([mo.md(summary), fig])
-    return ax, fig, fn, hi, result, summary, xlabel
+    return
 
 
 if __name__ == "__main__":

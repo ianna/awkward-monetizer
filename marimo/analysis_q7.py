@@ -1,5 +1,6 @@
 import marimo
 
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 
@@ -13,22 +14,22 @@ def _():
     from awkward_monetizer import adl
     from awkward_monetizer.db import open_server
     from awkward_monetizer.reconstruct import reconstruct_multi
+
     return adl, mo, np, open_server, pd, plt, reconstruct_multi
 
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        # ADL Q7 — HT of jets far from any lepton
+    mo.md(r"""
+    # ADL Q7 — HT of jets far from any lepton
 
-        Scalar sum of pT over jets with pT > 30, |η| < 2.4 that are **not** within
-        ΔR < 0.4 of a muon with pT > 10. `adl.q7_ht_cleaned` builds the jet×lepton
-        pairs with `ak.cartesian(..., nested=True)` and uses `vector`'s `.deltaR`
-        (which wraps Δφ correctly) — the schema's lepton collection is `muons`,
-        not a `leptons` table.
-        """
-    )
+    Scalar sum of pT over jets with pT > 30, |η| < 2.4 that are **not** within
+    ΔR < 0.4 of a muon with pT > 10. `adl.q7_ht_cleaned` builds the jet×lepton
+    pairs with `ak.cartesian(..., nested=True)` and uses `vector`'s `.deltaR`
+    (which wraps Δφ correctly) — the schema's lepton collection is `muons`,
+    not a `leptons` table.
+    """)
+    return
 
 
 @app.cell
@@ -40,7 +41,8 @@ def _(open_server, pd):
         cur.execute(sql)
         return pd.DataFrame(cur.fetchall(),
                             columns=[c[0] for c in cur.description])
-    return conn, fetch
+
+    return (fetch,)
 
 
 @app.cell
@@ -49,7 +51,7 @@ def _(fetch, reconstruct_multi):
     jets_df = fetch("SELECT * FROM jets ORDER BY event_id, jet_index")
     muons_df = fetch("SELECT * FROM muons ORDER BY event_id, muon_index")
     events = reconstruct_multi(events_df, {"jets": jets_df, "muons": muons_df})
-    return events, events_df, jets_df, muons_df
+    return (events,)
 
 
 @app.cell
@@ -72,7 +74,7 @@ def _(ht, mo, np, plt):
               if ht.size else "no events"),
         fig,
     ])
-    return ax, fig
+    return
 
 
 if __name__ == "__main__":
