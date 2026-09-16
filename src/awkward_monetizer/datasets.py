@@ -99,8 +99,12 @@ DIMUON = Dataset(
 NANOAOD = Dataset(
     name="nanoaod",
     tree="Events",
-    event_id="event",
-    events=Scalars({"run": "run", "met_pt": "MET_pt", "met_phi": "MET_phi"}),
+    # `event` alone is NOT unique in real NanoAOD (the key is run+lumi+event), so
+    # synthesize event_id from the row index and keep run/lumi/event as columns.
+    event_id="row",
+    events=Scalars({"run": "run", "lumi": "luminosityBlock",
+                    "event_number": "event",
+                    "met_pt": "MET_pt", "met_phi": "MET_phi"}),
     collections=[
         JaggedCollection(
             table="jets", index_col="jet_index", count_branch="Jet_pt",

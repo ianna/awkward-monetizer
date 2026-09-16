@@ -20,15 +20,13 @@ def _():
 def _(mo):
     mo.md(
         r"""
-        # ADL Q4 — MET of events with ≥ 2 jets (pT > 40 GeV)
+        # ADL Q6 — pT of the trijet with mass closest to 172.5 GeV
 
-        Reads the `nanoaod` tables from the running MonetDB **`hep`** database,
-        rebuilds the nested (NF2) event structure in Awkward with
-        `reconstruct_multi` (per-event counts + `ak.unflatten` — there is no
-        `ak.group_by`), and runs the validated `adl.q4_met_ge2jets40`.
-
-        Populate the DB first, e.g.
-        `awkward-monetizer ingest nano.root --dataset nanoaod --database hep`.
+        For events with ≥ 3 jets, take every 3-jet combination
+        (`ak.combinations(jets, 3)`), pick the one whose **invariant mass** —
+        the mass of the summed 4-momenta, via scikit-hep `vector`, *not* the sum
+        of the jet masses — is closest to 172.5 GeV, and plot its pT. Uses the
+        validated `adl.q6_trijet_pt`.
         """
     )
     return
@@ -48,33 +46,31 @@ def _(open_server, pd):
 
 @app.cell
 def _(fetch, reconstruct_multi):
-    # events carries met_pt/met_phi; jets are exploded (one row per jet).
     events_df = fetch("SELECT * FROM events")
     jets_df = fetch("SELECT * FROM jets ORDER BY event_id, jet_index")
-    # reconstruct_multi reindexes jet counts onto every event (jetless events
-    # get an empty list), so no events are silently dropped.
     events = reconstruct_multi(events_df, {"jets": jets_df})
     return events, events_df, jets_df
 
 
 @app.cell
 def _(adl, events):
-    met = adl.q4_met_ge2jets40(events)   # MET of events with >=2 jets pT>40
-    return (met,)
+    trijet_pt = adl.q6_trijet_pt(events)
+    return (trijet_pt,)
 
 
 @app.cell
-def _(met, mo, np, plt):
+def _(mo, np, plt, trijet_pt):
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(met, bins=50, range=(0, 200), histtype="stepfilled",
+    ax.hist(trijet_pt, bins=50, range=(0, 400), histtype="stepfilled",
             color="#3b6fb6", alpha=0.85, edgecolor="#26456e")
-    ax.set_xlabel("MET [GeV]")
+    ax.set_xlabel("trijet pT [GeV]")
     ax.set_ylabel("events")
-    ax.set_title("Q4: MET, ≥2 jets pT > 40 GeV")
+    ax.set_title("Q6: pT of the trijet with m closest to 172.5 GeV")
     fig.tight_layout()
     mo.vstack([
-        mo.md(f"**{met.size:,}** selected events "
-              f"(mean MET {np.mean(met):.1f} GeV)" if met.size else "no events"),
+        mo.md(f"**{trijet_pt.size:,}** events with ≥3 jets "
+              f"(mean trijet pT {np.mean(trijet_pt):.1f} GeV)"
+              if trijet_pt.size else "no events with ≥3 jets"),
         fig,
     ])
     return ax, fig

@@ -20,15 +20,13 @@ def _():
 def _(mo):
     mo.md(
         r"""
-        # ADL Q4 — MET of events with ≥ 2 jets (pT > 40 GeV)
+        # ADL Q7 — HT of jets far from any lepton
 
-        Reads the `nanoaod` tables from the running MonetDB **`hep`** database,
-        rebuilds the nested (NF2) event structure in Awkward with
-        `reconstruct_multi` (per-event counts + `ak.unflatten` — there is no
-        `ak.group_by`), and runs the validated `adl.q4_met_ge2jets40`.
-
-        Populate the DB first, e.g.
-        `awkward-monetizer ingest nano.root --dataset nanoaod --database hep`.
+        Scalar sum of pT over jets with pT > 30, |η| < 2.4 that are **not** within
+        ΔR < 0.4 of a muon with pT > 10. `adl.q7_ht_cleaned` builds the jet×lepton
+        pairs with `ak.cartesian(..., nested=True)` and uses `vector`'s `.deltaR`
+        (which wraps Δφ correctly) — the schema's lepton collection is `muons`,
+        not a `leptons` table.
         """
     )
     return
@@ -48,33 +46,31 @@ def _(open_server, pd):
 
 @app.cell
 def _(fetch, reconstruct_multi):
-    # events carries met_pt/met_phi; jets are exploded (one row per jet).
     events_df = fetch("SELECT * FROM events")
     jets_df = fetch("SELECT * FROM jets ORDER BY event_id, jet_index")
-    # reconstruct_multi reindexes jet counts onto every event (jetless events
-    # get an empty list), so no events are silently dropped.
-    events = reconstruct_multi(events_df, {"jets": jets_df})
-    return events, events_df, jets_df
+    muons_df = fetch("SELECT * FROM muons ORDER BY event_id, muon_index")
+    events = reconstruct_multi(events_df, {"jets": jets_df, "muons": muons_df})
+    return events, events_df, jets_df, muons_df
 
 
 @app.cell
 def _(adl, events):
-    met = adl.q4_met_ge2jets40(events)   # MET of events with >=2 jets pT>40
-    return (met,)
+    ht = adl.q7_ht_cleaned(events)
+    return (ht,)
 
 
 @app.cell
-def _(met, mo, np, plt):
+def _(ht, mo, np, plt):
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(met, bins=50, range=(0, 200), histtype="stepfilled",
+    ax.hist(ht, bins=50, range=(0, 600), histtype="stepfilled",
             color="#3b6fb6", alpha=0.85, edgecolor="#26456e")
-    ax.set_xlabel("MET [GeV]")
+    ax.set_xlabel("HT [GeV]")
     ax.set_ylabel("events")
-    ax.set_title("Q4: MET, ≥2 jets pT > 40 GeV")
+    ax.set_title("Q7: HT of lepton-cleaned jets (pT>30, |η|<2.4, ΔR>0.4)")
     fig.tight_layout()
     mo.vstack([
-        mo.md(f"**{met.size:,}** selected events "
-              f"(mean MET {np.mean(met):.1f} GeV)" if met.size else "no events"),
+        mo.md(f"**{ht.size:,}** events (mean HT {np.mean(ht):.1f} GeV)"
+              if ht.size else "no events"),
         fig,
     ])
     return ax, fig

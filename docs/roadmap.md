@@ -28,7 +28,7 @@ run ADL on real NanoAOD data and build the ROOT/RDataFrame benchmark harness.
 
 ### ✅ Ingestion Pipeline
 - ✅ Implement ROOT → Awkward → flat tables → MonetDB — `ingest.py` (`COPY INTO`, `INSERT` fallback), verified loading into MonetDB via `roundtrip.py`
-- ⬜ Add batching and CSV/Arrow ingestion options
+- ✅ Add batching (chunked uproot.iterate streaming for large/real NanoAOD) and CSV ingestion options
 - ⬜ Validate ingestion correctness
 
 ### ✅ Basic Reconstruction

@@ -53,11 +53,11 @@ def read_root(path: str, ds: Dataset, tree: str | None,
 # --------------------------------------------------------------------------
 # Awkward -> flat pandas tables
 # --------------------------------------------------------------------------
-def build_events_table(events: ak.Array, ds: Dataset):
+def build_events_table(events: ak.Array, ds: Dataset, id_offset: int = 0):
     """Return (events DataFrame, event_id array reused by the collections)."""
     n = len(events)
     if ds.event_id == "row":
-        eid = np.arange(n, dtype=np.int64)
+        eid = np.arange(n, dtype=np.int64) + id_offset
     else:
         eid = np.asarray(events[ds.event_id])
     cols = {"event_id": eid}
@@ -99,8 +99,9 @@ def build_wide(events: ak.Array, coll: WideCollection,
     return out.sort_values(["event_id", coll.index_col]).reset_index(drop=True)
 
 
-def build_tables(events: ak.Array, ds: Dataset) -> dict[str, pd.DataFrame]:
-    events_df, eid = build_events_table(events, ds)
+def build_tables(events: ak.Array, ds: Dataset,
+                 id_offset: int = 0) -> dict[str, pd.DataFrame]:
+    events_df, eid = build_events_table(events, ds, id_offset=id_offset)
     tables = {"events": events_df}
     for coll in ds.collections:
         if isinstance(coll, JaggedCollection):
@@ -172,3 +173,24 @@ def _insert_many(cur, table: str, df: pd.DataFrame) -> None:
     rows = [tuple(v.item() if hasattr(v, "item") else v for v in row)
             for row in df.itertuples(index=False, name=None)]
     cur.executemany(sql, rows)
+
+
+def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None,
+                        step_size="100 MB", entry_stop: int | None = None,
+                        use_copy_into: bool = True) -> int:
+    """Stream a (possibly huge) ROOT file into MonetDB in chunks with
+    ``uproot.iterate``, so a multi-GB NanoAOD file never has to fit in memory.
+    Reads only the dataset's branches; synthesizes globally-unique ``event_id``
+    by offsetting each chunk. The tables must already exist. Returns the total
+    number of events loaded.
+    """
+    total = 0
+    with uproot.open(path) as f:
+        t = open_tree(f, tree if tree is not None else ds.tree)
+        for chunk in t.iterate(ds.all_branches(), step_size=step_size,
+                               entry_stop=entry_stop):
+            tables = build_tables(chunk, ds, id_offset=total)
+            load_tables(conn, tables, use_copy_into=use_copy_into)
+            total += len(chunk)
+            print(f"  ... {total} events ingested")
+    return total

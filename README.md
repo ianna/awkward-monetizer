@@ -86,7 +86,10 @@ object's position so nesting round-trips exactly. Two layouts (`--dataset`):
   event, two muons as parallel columns (`pt1/pt2`, `Q1/Q2`, …), precomputed mass
   `M`. Un-pivoted into a `muons` table. Schema: `schemas/dimuon.sql`.
 - **nanoaod** — jagged per-event lists (`Jet_pt`, `Muon_pt`, …) exploded into
-  `jets`/`muons`, plus MET. Schema: `schemas/nanoaod.sql`.
+  `jets`/`muons`, plus MET. Schema: `schemas/nanoaod.sql`. Matches real CMS
+  NanoAODv9 branch names/types; `event_id` is synthesized from a row index
+  (because `event` alone isn't unique in NanoAOD — the key is run+lumi+event,
+  kept as `run`/`lumi`/`event_number` columns).
 
 ## Live MonetDB round-trip
 
@@ -174,6 +177,24 @@ The relational store is the right tool for columnar filtering, materialization,
 and scalar arithmetic; Awkward is the right tool for variable-length
 combinatorics and nested (NF2) physics. The point of the hybrid design is to use
 each where it wins, not to replace one with the other.
+
+## Ingesting real CMS Open Data NanoAOD
+
+The `nanoaod` dataset reads real CMS NanoAODv9 files directly (uproot pulls only
+the branches we map, so a multi-GB file isn't fully read). Get a file — e.g. the
+DoubleMuon sample from the [CMS NanoAOD guide](https://opendata.cern.ch/docs/cms-getting-started-nanoaod) —
+via XRootD and stream it into a running MonetDB `hep` server in chunks:
+
+```bash
+xrdcp root://eospublic.cern.ch//eos/opendata/cms/Run2016H/DoubleMuon/NANOAOD/UL2016_MiniAODv2_NanoAODv9-v1/2510000/127C2975-1B1C-A046-AABF-62B77E757A86.root .
+awkward-monetizer ingest 127C2975-*.root --dataset nanoaod --database hep \\
+    --create-schema --step-size "100 MB" --entry-stop 200000
+```
+
+`--step-size` streams with `uproot.iterate` (each chunk is offset so `event_id`
+stays globally unique), keeping memory flat regardless of file size;
+`--create-schema` (re)creates the tables first. Then the `nanoaod` ADL queries
+and benchmarks run on real physics.
 
 ## Testing
 

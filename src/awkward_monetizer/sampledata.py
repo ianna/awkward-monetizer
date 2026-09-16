@@ -24,6 +24,7 @@ def make_nanoaod(n_events: int = 2000, seed: int = 0) -> dict:
 
     return {
         "run": np.full(n_events, 1, dtype=np.int32),
+        "luminosityBlock": rng.integers(1, 2000, n_events).astype(np.int32),
         "event": np.arange(n_events, dtype=np.int64),
         "MET_pt": rng.exponential(30.0, n_events).astype(np.float64),
         "MET_phi": rng.uniform(-np.pi, np.pi, n_events).astype(np.float64),

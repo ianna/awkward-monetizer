@@ -15,11 +15,34 @@ DEFAULT_NANO = "data/nano_synth.root"
 # Subcommand handlers
 # --------------------------------------------------------------------------
 def _cmd_ingest(args) -> None:
-    import awkward as ak  # noqa: F401 (kept for parity / future use)
+    from . import db
     from .datasets import DATASETS
-    from .ingest import build_tables, load_monetdb, read_root
+    from .ingest import (build_tables, ingest_root_chunked, load_monetdb,
+                         read_root)
 
     ds = DATASETS[args.dataset]
+
+    # Chunked streaming path for large (real NanoAOD) files.
+    if args.step_size:
+        conn = db.open_server(database=args.database, host=args.host,
+                              port=args.port, user=args.user,
+                              password=args.password)
+        try:
+            if args.create_schema:
+                db.create_schema(conn, db.read_schema(ds.name))
+            print(f"streaming {args.root_file} (dataset={ds.name}) "
+                  f"in chunks of {args.step_size} ...")
+            n = ingest_root_chunked(args.root_file, ds, conn, tree=args.tree,
+                                    step_size=args.step_size,
+                                    entry_stop=args.entry_stop,
+                                    use_copy_into=not args.no_copy_into)
+            conn.commit()
+            print(f"done: {n} events.")
+        finally:
+            conn.close()
+        return
+
+    # One-shot path (small files).
     print(f"reading {args.root_file} (dataset={ds.name}) ...")
     events, tree = read_root(args.root_file, ds, args.tree,
                              entry_stop=args.entry_stop)
@@ -34,6 +57,13 @@ def _cmd_ingest(args) -> None:
             print(f"\n=== {name} (head) ===")
             print(df.head().to_string(index=False))
         return
+    if args.create_schema:
+        c = db.open_server(database=args.database, host=args.host,
+                           port=args.port, user=args.user, password=args.password)
+        try:
+            db.create_schema(c, db.read_schema(ds.name))
+        finally:
+            c.close()
     print(f"loading into MonetDB '{args.database}' ...")
     load_monetdb(tables, database=args.database, host=args.host, port=args.port,
                  user=args.user, password=args.password,
@@ -154,6 +184,11 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--dataset", default="dimuon")
     ing.add_argument("--tree", default=None)
     ing.add_argument("--entry-stop", type=int, default=None)
+    ing.add_argument("--step-size", default=None,
+                     help="stream in chunks of this size (e.g. '100 MB' or 50000) "
+                          "for large files; requires a running server")
+    ing.add_argument("--create-schema", action="store_true",
+                     help="(re)create the dataset's schema before loading")
     ing.add_argument("--truncate", action="store_true")
     ing.add_argument("--no-copy-into", action="store_true")
     ing.add_argument("--dry-run", action="store_true")

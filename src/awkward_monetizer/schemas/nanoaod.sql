@@ -3,11 +3,13 @@
 -- ingest builds. (A 'tracks' table is planned but not yet loaded.)
 
 CREATE TABLE events (
-    event_id BIGINT PRIMARY KEY,
-    run      INT,
-    met_pt   DOUBLE,
-    met_phi  DOUBLE,
-    n_jets   INT
+    event_id     BIGINT PRIMARY KEY,   -- synthetic row id (unique across chunks)
+    run          INT,
+    lumi         INT,                  -- luminosityBlock
+    event_number BIGINT,               -- NanoAOD `event` (not unique on its own)
+    met_pt       DOUBLE,
+    met_phi      DOUBLE,
+    n_jets       INT
 );
 
 CREATE TABLE jets (
