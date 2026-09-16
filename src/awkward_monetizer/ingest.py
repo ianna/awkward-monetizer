@@ -177,20 +177,34 @@ def _insert_many(cur, table: str, df: pd.DataFrame) -> None:
 
 def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None,
                         step_size="100 MB", entry_stop: int | None = None,
-                        use_copy_into: bool = True) -> int:
+                        use_copy_into: bool = True, truncate: bool = False,
+                        dry_run: bool = False) -> int:
     """Stream a (possibly huge) ROOT file into MonetDB in chunks with
     ``uproot.iterate``, so a multi-GB NanoAOD file never has to fit in memory.
     Reads only the dataset's branches; synthesizes globally-unique ``event_id``
     by offsetting each chunk. The tables must already exist. Returns the total
     number of events loaded.
+
+    With dry_run=True, build and summarize each chunk without using conn.
+    Truncation happens once before loading, including for an empty input.
     """
     total = 0
     with uproot.open(path) as f:
         t = open_tree(f, tree if tree is not None else ds.tree)
+        if truncate and not dry_run:
+            cur = conn.cursor()
+            for name in [c.table for c in ds.collections] + ["events"]:
+                cur.execute(f"DELETE FROM {name}")
         for chunk in t.iterate(ds.all_branches(), step_size=step_size,
                                entry_stop=entry_stop):
             tables = build_tables(chunk, ds, id_offset=total)
-            load_tables(conn, tables, use_copy_into=use_copy_into)
+            if dry_run:
+                for name, df in tables.items():
+                    print(f"  built {name}: {len(df)} rows x {len(df.columns)} cols")
+            else:
+                load_tables(conn, tables, use_copy_into=use_copy_into)
             total += len(chunk)
-            print(f"  ... {total} events ingested")
+            print(f"  ... {total} events {'read' if dry_run else 'ingested'}")
+        if truncate and not dry_run and total == 0:
+            conn.commit()
     return total

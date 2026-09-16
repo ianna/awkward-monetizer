@@ -105,6 +105,10 @@ awkward-monetizer roundtrip --root-file data/cms.root      # server backend
 reconstructed dimuon mass against the stored `M`. `--backend embedded` runs the
 same cycle in-process via `monetdbe` (loads with `INSERT`).
 
+Round-trip mass validation supports only `dimuon`; unsupported datasets are
+rejected before connecting to the database. If the SQL filter selects no events,
+validation reports that it did not run and returns `passed=False`.
+
 ## ADL benchmark
 
 `adl.py` implements the eight IRIS-HEP ADL benchmark queries (Q1 MET, Q2/Q3 jet
@@ -195,6 +199,10 @@ awkward-monetizer ingest 127C2975-*.root --dataset nanoaod --database hep \\
 stays globally unique), keeping memory flat regardless of file size;
 `--create-schema` (re)creates the tables first. Then the `nanoaod` ADL queries
 and benchmarks run on real physics.
+
+`--step-size 50000` sets an entry count instead of a memory size. Add `--dry-run`
+to build and summarize chunks without connecting to MonetDB, or `--truncate`
+to clear the dataset's tables once before loading the chunks.
 
 ## Testing
 

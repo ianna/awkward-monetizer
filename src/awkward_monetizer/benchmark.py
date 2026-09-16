@@ -347,8 +347,8 @@ def run(root_file: str, *, dataset: str = "dimuon",
     """Run the selected backends and return a results dict. Prints a table."""
     tmp = None
     if scale > 1:
-        tmp = tempfile.NamedTemporaryFile(suffix=".root", delete=False)
-        tmp.close()
+        with tempfile.NamedTemporaryFile(suffix=".root", delete=False) as tmp:
+            pass
         print(f"scaling {root_file} ×{scale} → temp file ...")
         root_file = scale_root(root_file, scale, tmp.name, dataset)
 

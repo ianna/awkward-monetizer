@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run the backend benchmark (thin wrapper over awkward_monetizer.benchmark).
 
 Equivalent to ``awkward-monetizer bench``. Example:

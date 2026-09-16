@@ -20,13 +20,15 @@ from .physics import invariant_mass, opposite_charge_pair
 from .reconstruct import fetch_tables, reconstruct_events
 
 # dataset name -> packaged schema name
-_SCHEMA_FOR = {"dimuon": "dimuon", "nanoaod": "nanoaod"}
+_SCHEMA_FOR = {"dimuon": "dimuon"}
 
 
 def run(*, root_file: str, dataset: str = "dimuon", backend: str = "server",
         where: str = "mass BETWEEN 60 AND 120", use_copy_into: bool = True,
         conn_kwargs: dict | None = None) -> dict:
-    """Run the full cycle and return a result dict. Prints progress."""
+    """Validate a dimuon round-trip; an empty selection returns passed=False."""
+    if dataset not in _SCHEMA_FOR:
+        raise ValueError("roundtrip validation supports only the dimuon dataset")
     conn_kwargs = conn_kwargs or {}
     ds = DATASETS[dataset]
 
@@ -58,6 +60,10 @@ def run(*, root_file: str, dataset: str = "dimuon", backend: str = "server",
         conn.close()
 
     print("[5/5] reconstruct NF2 in Awkward + validate ...")
+    if events_df.empty:
+        print("No events selected; round-trip validation did not run.")
+        return {"n_events": 0, "max_abs_diff": float("nan"),
+                "mean_abs_diff": float("nan"), "n_opposite_charge": 0, "passed": False}
     events = reconstruct_events(events_df, muons_df)
     recon = ak.to_numpy(invariant_mass(events.muons))
     stored = ak.to_numpy(events.mass)

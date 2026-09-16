@@ -23,6 +23,13 @@ def _cmd_ingest(args) -> None:
 
     # Chunked streaming path for large (real NanoAOD) files.
     if args.step_size:
+        if args.dry_run:
+            n = ingest_root_chunked(
+                args.root_file, ds, None, tree=args.tree,
+                step_size=args.step_size, entry_stop=args.entry_stop, dry_run=True,
+            )
+            print(f"dry run -- {n} events; not loading into MonetDB")
+            return
         conn = db.open_server(database=args.database, host=args.host,
                               port=args.port, user=args.user,
                               password=args.password)
@@ -34,9 +41,13 @@ def _cmd_ingest(args) -> None:
             n = ingest_root_chunked(args.root_file, ds, conn, tree=args.tree,
                                     step_size=args.step_size,
                                     entry_stop=args.entry_stop,
+                                    truncate=args.truncate,
                                     use_copy_into=not args.no_copy_into)
             conn.commit()
             print(f"done: {n} events.")
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
         return
@@ -174,6 +185,16 @@ def _add_server_args(sp) -> None:
     sp.add_argument("--password", default="monetdb")
 
 
+def _step_size(value: str) -> int | str:
+    try:
+        count = int(value)
+    except ValueError:
+        return value
+    if count <= 0:
+        raise argparse.ArgumentTypeError("step size must be a positive entry count")
+    return count
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="awkward-monetizer",
                                 description="Hybrid Awkward + MonetDB HEP engine.")
@@ -184,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--dataset", default="dimuon")
     ing.add_argument("--tree", default=None)
     ing.add_argument("--entry-stop", type=int, default=None)
-    ing.add_argument("--step-size", default=None,
+    ing.add_argument("--step-size", type=_step_size, default=None,
                      help="stream in chunks of this size (e.g. '100 MB' or 50000) "
                           "for large files; requires a running server")
     ing.add_argument("--create-schema", action="store_true",
@@ -202,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rt = sub.add_parser("roundtrip", help="full ingest -> MonetDB -> reconstruct")
     rt.add_argument("--root-file", default=DEFAULT_DIMUON)
-    rt.add_argument("--dataset", default="dimuon")
+    rt.add_argument("--dataset", choices=("dimuon",), default="dimuon")
     rt.add_argument("--backend", choices=("server", "embedded"), default="server")
     rt.add_argument("--where", default="mass BETWEEN 60 AND 120")
     rt.add_argument("--no-copy-into", action="store_true")

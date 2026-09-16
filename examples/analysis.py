@@ -14,7 +14,7 @@ def _():
     try:
         import mplhep as hep
         plt.style.use(hep.style.CMS)
-    except Exception:
+    except ImportError:
         hep = None
 
     from awkward_monetizer.physics import invariant_mass, opposite_charge_pair

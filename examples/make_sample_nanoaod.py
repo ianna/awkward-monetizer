@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Write a synthetic NanoAOD ROOT file (thin wrapper over the package).
 
 Equivalent to ``awkward-monetizer make-nano``.
