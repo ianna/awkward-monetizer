@@ -167,6 +167,14 @@ def _cmd_bench(args) -> None:
         bk = backends if args.backends != "awkward,hybrid" else ("awkward", "monetdb")
         run_trijet(nano, backends=bk, repeats=args.repeats,
                    hybrid_backend=args.hybrid_backend, conn_kwargs=conn_kwargs)
+    elif args.analysis == "zmumu-nano":
+        from .benchmark import run_zmumu_nano
+        nano = args.root_file if args.root_file != DEFAULT_DIMUON else DEFAULT_NANO
+        # jagged NanoAOD Z->mumu: awkward vs in-DB SQL (rdataframe optional)
+        bk = backends if args.backends != "awkward,hybrid" else ("awkward", "monetdb")
+        run_zmumu_nano(nano, backends=bk, repeats=args.repeats,
+                       hybrid_backend=args.hybrid_backend, conn_kwargs=conn_kwargs,
+                       metric_only=args.metric_only, threads=args.threads)
     else:
         from .benchmark import run
         run(args.root_file, dataset=args.dataset, backends=backends,
@@ -245,11 +253,20 @@ def build_parser() -> argparse.ArgumentParser:
     bn = sub.add_parser("bench", help="benchmark backends (awkward/hybrid/rdataframe)")
     bn.add_argument("--root-file", default=DEFAULT_DIMUON)
     bn.add_argument("--dataset", default="dimuon")
-    bn.add_argument("--analysis", choices=("zmumu", "trijet"), default="zmumu",
-                    help="zmumu (dimuon) or trijet (ADL Q6, nanoaod)")
+    bn.add_argument("--analysis", choices=("zmumu", "zmumu-nano", "trijet"),
+                    default="zmumu",
+                    help="zmumu (flat dimuon ntuple), zmumu-nano (Z->mumu on real "
+                         "jagged NanoAOD), or trijet (ADL Q6, nanoaod)")
     bn.add_argument("--backends", default="awkward,hybrid",
                     help="comma-separated: awkward,hybrid,monetdb,rdataframe")
     bn.add_argument("--scale", type=int, default=1)
+    bn.add_argument("--threads", type=int, default=1,
+                    help="rdataframe: ROOT implicit-MT threads (1=off, 0=all "
+                         "cores, N=N cores). MonetDB server is already parallel; "
+                         "awkward combinatorics is single-threaded numpy")
+    bn.add_argument("--metric-only", action="store_true",
+                    help="zmumu-nano: aggregate count/mean inside MonetDB and "
+                         "ship only two numbers, instead of streaming every mass")
     bn.add_argument("--repeats", type=int, default=5)
     bn.add_argument("--hybrid-backend", choices=("server", "embedded"),
                     default="embedded")

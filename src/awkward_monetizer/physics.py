@@ -13,17 +13,32 @@ TOP_MASS = 172.5
 
 
 def jets_p4(events: ak.Array) -> ak.Array:
-    """Momentum4D array of jets from (pt, eta, phi, mass)."""
+    """Momentum4D array of jets from (pt, eta, phi, mass).
+
+    Kinematics are promoted to float64: NanoAOD stores them as float32, but the
+    MonetDB tables are DOUBLE, and invariant mass is a difference of large
+    squares (E^2 - p^2) that loses all significance in float32 for high-momentum
+    objects. Computing in float64 keeps the Awkward and in-DB results in
+    agreement (and is simply more accurate).
+    """
     j = events.jets
-    return ak.zip({"pt": j.pt, "eta": j.eta, "phi": j.phi, "mass": j.mass},
+    def f64(x): return ak.values_astype(x, np.float64)
+    return ak.zip({"pt": f64(j.pt), "eta": f64(j.eta),
+                   "phi": f64(j.phi), "mass": f64(j.mass)},
                   with_name="Momentum4D")
 
 
 def muons_p4(events: ak.Array) -> ak.Array:
-    """Momentum4D array of muons, carrying charge as an extra field."""
+    """Momentum4D array of muons, carrying charge as an extra field.
+
+    Kinematics are promoted to float64 (see :func:`jets_p4`) so the invariant
+    mass matches the DOUBLE-precision in-database computation.
+    """
     m = events.muons
-    return ak.zip({"pt": m.pt, "eta": m.eta, "phi": m.phi, "mass": m.mass,
-                   "charge": m.charge}, with_name="Momentum4D")
+    def f64(x): return ak.values_astype(x, np.float64)
+    return ak.zip({"pt": f64(m.pt), "eta": f64(m.eta), "phi": f64(m.phi),
+                   "mass": f64(m.mass), "charge": m.charge},
+                  with_name="Momentum4D")
 
 
 def invariant_mass(objects: ak.Array) -> ak.Array:
