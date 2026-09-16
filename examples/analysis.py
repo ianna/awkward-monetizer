@@ -6,10 +6,10 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    import marimo as mo
-    import numpy as np
     import awkward as ak
+    import marimo as mo
     import matplotlib.pyplot as plt
+    import numpy as np
 
     try:
         import mplhep as hep
@@ -52,7 +52,6 @@ def _(mo):
         use the SQL round-trip instead of reading the file directly.
         """
     )
-    return
 
 
 @app.cell
@@ -76,7 +75,6 @@ def _(events_df, mo, muons_df):
         f"Loaded **{len(events_df):,}** events and **{len(muons_df):,}** muons; "
         f"reconstructed into a jagged `events.muons` array."
     )
-    return
 
 
 @app.cell
@@ -88,7 +86,6 @@ def _(ak, events, invariant_mass, mo, np):
         f"**Validation** — reconstructed m(μμ) vs stored `M`: "
         f"max |Δ| = `{_max:.2e}` GeV across {len(_recon):,} events. ✓"
     )
-    return
 
 
 @app.cell

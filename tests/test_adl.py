@@ -2,7 +2,7 @@ import awkward as ak
 import numpy as np
 import vector
 
-import awkward_monetizer.adl as adl
+from awkward_monetizer import adl
 
 vector.register_awkward()
 

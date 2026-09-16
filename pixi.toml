@@ -17,6 +17,7 @@ mplhep = "*"       # HEP plot styling
 hist = "*"         # histogramming
 vector = "*"       # Lorentz-vector math (scikit-hep)
 pytest = "*"       # test runner
+ruff = ">=0.16.7,<0.17"
 
 [pypi-dependencies]
 # Awkward built from a local GitHub checkout at ./awkward (clone --recursive).

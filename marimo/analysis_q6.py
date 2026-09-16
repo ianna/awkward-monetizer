@@ -6,9 +6,9 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import marimo as mo
+    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
-    import matplotlib.pyplot as plt
 
     from awkward_monetizer import adl
     from awkward_monetizer.db import open_server
@@ -29,7 +29,6 @@ def _(mo):
         validated `adl.q6_trijet_pt`.
         """
     )
-    return
 
 
 @app.cell

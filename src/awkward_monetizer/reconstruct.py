@@ -12,7 +12,7 @@ import awkward as ak
 import pandas as pd
 
 from .datasets import DATASETS
-from .ingest import read_root, build_tables
+from .ingest import build_tables, read_root
 
 
 # --------------------------------------------------------------------------

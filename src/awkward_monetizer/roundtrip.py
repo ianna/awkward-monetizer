@@ -73,7 +73,7 @@ def run(*, root_file: str, dataset: str = "dimuon", backend: str = "server",
     )
     print("\n===== round-trip result =====")
     print(f"  events through DB round-trip : {result['n_events']}")
-    print(f"  reconstructed m(μμ) vs stored M:")
+    print("  reconstructed m(μμ) vs stored M:")
     print(f"    max |Δ|  : {result['max_abs_diff']:.3e} GeV")
     print(f"    mean |Δ| : {result['mean_abs_diff']:.3e} GeV")
     print(f"  opposite-charge events in slice : {result['n_opposite_charge']}")

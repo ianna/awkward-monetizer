@@ -20,16 +20,16 @@ except PackageNotFoundError:  # not installed (e.g. running from a source tree)
     __version__ = "0.0.0"
 
 __all__ = [
-    "__version__",
     "DATASETS",
     "Dataset",
-    "read_root",
+    "__version__",
     "build_tables",
-    "load_tables",
-    "reconstruct_multi",
-    "reconstruct_events",
-    "tables_from_root",
     "fetch_tables",
     "invariant_mass",
+    "load_tables",
     "opposite_charge_pair",
+    "read_root",
+    "reconstruct_events",
+    "reconstruct_multi",
+    "tables_from_root",
 ]

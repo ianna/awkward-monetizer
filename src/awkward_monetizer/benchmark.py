@@ -209,7 +209,7 @@ def backend_monetdb(root_file: str, dataset: str, repeats: int,
 
 def backend_rdataframe(root_file: str, dataset: str, repeats: int) -> dict:
     """ROOT RDataFrame computing the same Z→μμ selection. Requires ROOT."""
-    import ROOT  # noqa: F401 — only imported when this backend is requested
+    import ROOT
 
     tree = DATASETS[dataset].tree or "events"
     mass_expr = ("sqrt((E1+E2)*(E1+E2) - ((px1+px2)*(px1+px2) "

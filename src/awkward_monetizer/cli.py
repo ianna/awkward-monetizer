@@ -17,8 +17,7 @@ DEFAULT_NANO = "data/nano_synth.root"
 def _cmd_ingest(args) -> None:
     from . import db
     from .datasets import DATASETS
-    from .ingest import (build_tables, ingest_root_chunked, load_monetdb,
-                         read_root)
+    from .ingest import build_tables, ingest_root_chunked, load_monetdb, read_root
 
     ds = DATASETS[args.dataset]
 
@@ -72,9 +71,9 @@ def _cmd_ingest(args) -> None:
 
 
 def _cmd_reconstruct(args) -> None:
+    import awkward as ak
     import numpy as np
 
-    import awkward as ak
     from .physics import invariant_mass, opposite_charge_pair
     from .reconstruct import reconstruct_events, tables_from_root
 
@@ -106,9 +105,9 @@ def _cmd_roundtrip(args) -> None:
 
 
 def _cmd_adl(args) -> None:
+    import awkward as ak
     import numpy as np
 
-    import awkward as ak
     from .adl import events_from_root, run_all
 
     print(f"loading {args.from_root} ...")
@@ -139,6 +138,7 @@ def _cmd_adl(args) -> None:
 
 def _cmd_make_nano(args) -> None:
     import os
+
     from .sampledata import write_nanoaod
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     write_nanoaod(args.out, args.events, args.seed)
