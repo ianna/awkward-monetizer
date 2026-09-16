@@ -4,7 +4,11 @@ A hybrid High-Energy Physics (HEP) analysis engine that combines:
 
 - **[MonetDB](https://www.monetdb.org/)** — fast, columnar SQL over event-level data
 - **[Awkward Array](https://awkward-array.org/)** — high-performance nested (NF2) physics analysis
-- **[Apache Arrow](https://arrow.apache.org/)** — the bridge between the two
+- **pandas** — the current table interchange between Python and MonetDB
+
+[Apache Arrow](https://arrow.apache.org/) is a dependency and a planned transport
+integration; the current database path uses pandas with CSV `COPY INTO` or SQL
+`INSERT` for loading and DB-API rows for fetching.
 
 Interactive exploration is done in [Marimo](https://marimo.io/) notebooks; the aim
 is a Python-native alternative to [ROOT/RDataFrame](https://root.cern/doc/master/classROOT_1_1RDataFrame.html).
@@ -36,46 +40,74 @@ src/awkward_monetizer/
   db.py           MonetDB connections (server / embedded) + packaged schema
   physics.py      4-vectors (scikit-hep vector), invariant mass, charge pairs
   adl.py          ADL Q1–Q8 benchmark queries
+  benchmark.py    dimuon and trijet backend timing/comparison
   roundtrip.py    full ingest → DB → slice → reconstruct → validate cycle
   sampledata.py   synthetic NanoAOD generator
   cli.py          `awkward-monetizer` command-line interface
   schemas/        packaged SQL (dimuon.sql, nanoaod.sql, jets.sql)
 examples/         analysis.py (Marimo notebook), make_sample_nanoaod.py
+marimo/           ADL dashboard and individual Q4/Q6/Q7/Q8 notebooks
 tests/            pytest suite (reconstruction, round-trip, ADL)
 data/             inputs (git-ignored) — see data/README.md
+.github/workflows/ CI and PyPI Trusted Publishing
 ```
 
 ## Install
 
-Development environment via **pixi** (builds Awkward from a local source
-checkout; see *Awkward from source* below):
+Requires Python 3.10 or newer. For a published release:
 
 ```bash
-git clone --recursive https://github.com/scikit-hep/awkward.git
+python -m pip install awkward-monetizer
+# Include plotting and notebook dependencies:
+python -m pip install "awkward-monetizer[notebook]"
+```
+
+For development and the repository's notebooks, clone this repository first.
+Use a virtual environment with pip (this uses released Awkward):
+
+```bash
+git clone https://github.com/ianna/awkward-monetizer.git
+cd awkward-monetizer
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[notebook,dev]"
+```
+
+Alternatively, from the repository root, use **pixi** to build Awkward from a
+local source checkout (see *Awkward from source* below):
+
+```bash
+git clone --recursive https://github.com/scikit-hep/awkward.git awkward
 pixi install
 ```
 
-Or plain pip (uses released Awkward):
-
-```bash
-pip install -e ".[notebook,dev]"
-```
-
-The MonetDB **server** is separate (not on PyPI/conda): `brew install monetdb`
-on macOS. The embedded engine (`pip install ".[embedded]"`, i.e. `monetdbe`) needs
-Python ≤ 3.10.
+The MonetDB **server** is installed separately: `brew install monetdb` on macOS.
+The optional embedded backend (`python -m pip install ".[embedded]"` from a
+checkout) uses `monetdbe`. Its [published wheels](https://pypi.org/project/monetdbe/#files)
+cover Python through 3.10; use Python 3.10 for that extra, or a server backend on
+newer Python versions. A database is not needed for the quickstart below.
 
 ## Quickstart
 
+Start with generated data; no ROOT files are bundled:
+
 ```bash
-awkward-monetizer ingest data/cms.root --dry-run    # ROOT → flat tables
-awkward-monetizer reconstruct data/cms.root         # → Awkward NF2 + validate
-awkward-monetizer make-nano                          # synthetic NanoAOD
-awkward-monetizer adl                                # ADL Q1–Q8 on it
+awkward-monetizer make-nano                         # synthetic NanoAOD
+awkward-monetizer adl                               # ADL Q1–Q8 on it
+awkward-monetizer ingest data/nano_synth.root --dataset nanoaod --dry-run
+```
+
+For the dimuon example, first provide `data/cms.root` as described in
+[data/README.md](https://github.com/ianna/awkward-monetizer/blob/main/data/README.md):
+
+```bash
+awkward-monetizer ingest data/cms.root --dry-run
+awkward-monetizer reconstruct data/cms.root
 ```
 
 With pixi these are tasks: `pixi run ingest-dryrun`, `pixi run reconstruct-demo`,
 `pixi run make-nano`, `pixi run adl`, `pixi run notebook`, `pixi run test`.
+Prefix other commands with `pixi run` when using the pixi environment.
 
 ## Datasets
 
@@ -121,8 +153,7 @@ Q7/Q8 use muons as leptons; Q6 omits the b-tag term (no b-tag branch yet).
 ## Awkward from source
 
 `pixi.toml` builds Awkward from a local `./awkward` clone (path dependencies:
-`awkward-cpp` compiled, `awkward` editable) rather than a wheel — a `{ git=... }`
-spec resolves to the released wheel. Verify with `pixi run check-awkward`: the
+`awkward-cpp` compiled, `awkward` editable). Verify with `pixi run check-awkward`: the
 `file:` path should resolve into `./awkward/src/awkward/`. On macOS the source
 build pins `MACOSX_DEPLOYMENT_TARGET` so the compiled wheel matches conda-forge's
 Python; if a build is rejected as `macosx_15_0` incompatible, run
@@ -142,14 +173,16 @@ Python; if a build is rejected as `macosx_15_0` incompatible, run
   reconstruction. Runs on a server or embedded `monetdbe`.
 - **rdataframe** — ROOT `RDataFrame` (gated: runs only if `import ROOT` works)
 
-`--scale K` tiles the input into a K× larger physical ROOT file every backend
-reads, so timings are meaningful; the query phase is timed (median of `--repeats`)
-while one-time setup (reconstruction / DB ingest) is reported separately, since a
-database amortizes load cost across many queries.
+For the dimuon analysis, `--scale K` tiles the input into a K× larger physical
+ROOT file. Query timings report the median of `--repeats`. Setup is reported
+separately, but timing boundaries differ: Awkward setup includes reading and
+reconstruction; database setup excludes the preceding ROOT read and flattening;
+RDataFrame reads the file during its query. Interpret the results with those
+differences in mind. Trijet analysis does not apply `--scale`.
 
 ```bash
-awkward-monetizer bench --root-file data/cms.root --scale 50 \\
-    --backends awkward,hybrid,rdataframe --repeats 5
+awkward-monetizer bench --root-file data/cms.root --scale 50 \
+    --backends awkward,hybrid,rdataframe --hybrid-backend server --repeats 5
 ```
 
 The backends cross-check on selected-event count and mean mass (the harness prints
@@ -159,22 +192,22 @@ by a wide margin on this query. The embedded hybrid backend loads via `INSERT`
 (slow); use `--hybrid-backend server` (a real MonetDB server with `COPY INTO`) to
 benchmark a realistic load path.
 
-### When SQL wins vs when Awkward wins
+### Comparing scalar selection and jagged combinatorics
 
-The harness ships two analyses (`--analysis`) that show the crossover:
+The harness ships two analyses (`--analysis`) with different workloads:
 
-- `zmumu` (flat: two muons/event, a scalar mass) **favors the database** — the
-  in-DB `monetdb` backend runs the whole selection in SQL and beats
-  fetch-and-reconstruct.
+- `zmumu` (flat: two muons/event, a scalar mass): the in-DB `monetdb` backend
+  runs the whole selection in SQL and returns only the selected masses.
 - `trijet` (ADL Q6, jagged: every 3-jet combination, keep the mass closest to
-  172.5 GeV) **favors Awkward** — `ak.combinations(jets, 3)` is one vectorized
-  line, whereas the SQL equivalent (`schemas/udf_trijet.sql`) needs two UDFs, a
-  3-way self-join over jet triples, and a window function — and runs *slower* on
-  the same data.
+  172.5 GeV): Awkward uses `ak.combinations`; the SQL equivalent needs two UDFs,
+  a 3-way self-join over jet triples, and a window function.
+
+Relative performance depends on input size, multiplicities, backend, and
+hardware; run the comparison on your data.
 
 ```bash
-awkward-monetizer bench --analysis trijet --root-file data/nano_synth.root \\
-    --backends awkward,monetdb
+awkward-monetizer bench --analysis trijet --root-file data/nano_synth.root \
+    --backends awkward,monetdb --hybrid-backend server
 ```
 
 The relational store is the right tool for columnar filtering, materialization,
@@ -191,12 +224,12 @@ via XRootD and stream it into a running MonetDB `hep` server in chunks:
 
 ```bash
 xrdcp root://eospublic.cern.ch//eos/opendata/cms/Run2016H/DoubleMuon/NANOAOD/UL2016_MiniAODv2_NanoAODv9-v1/2510000/127C2975-1B1C-A046-AABF-62B77E757A86.root .
-awkward-monetizer ingest 127C2975-*.root --dataset nanoaod --database hep \\
+awkward-monetizer ingest 127C2975-*.root --dataset nanoaod --database hep \
     --create-schema --step-size "100 MB" --entry-stop 200000
 ```
 
 `--step-size` streams with `uproot.iterate` (each chunk is offset so `event_id`
-stays globally unique), keeping memory flat regardless of file size;
+stays unique within that ingestion call), bounding the input read to a chunk;
 `--create-schema` (re)creates the tables first. Then the `nanoaod` ADL queries
 and benchmarks run on real physics.
 
@@ -204,21 +237,63 @@ and benchmarks run on real physics.
 to build and summarize chunks without connecting to MonetDB, or `--truncate`
 to clear the dataset's tables once before loading the chunks.
 
+Each ingestion call starts event IDs at zero; use `--truncate` or
+`--create-schema` when replacing a previous load. Appending multiple files with
+separate CLI calls is not supported. Chunks are committed individually.
+
+## Marimo notebooks
+
+From a repository checkout with notebook dependencies installed:
+
+```bash
+marimo edit examples/analysis.py    # dimuon notebook; requires data/cms.root
+```
+
+For the ADL dashboard, start the MonetDB `hep` server described above, then load
+the NanoAOD schema and data. `--create-schema` replaces the existing tables:
+
+```bash
+awkward-monetizer make-nano
+awkward-monetizer ingest data/nano_synth.root --dataset nanoaod --create-schema
+marimo edit marimo/dashboard.py
+```
+
+The dashboard offers Q4, Q6, Q7, and Q8. Individual notebooks are in `marimo/`.
+They fetch the tables and reconstruct events in memory; the dashboard does not
+stream the entire analysis in chunks.
+
 ## Testing
 
 ```bash
 pytest        # or: pixi run test
 ```
 
-The ADL suite runs on generated synthetic data; the dimuon and round-trip tests
-use `data/cms.root` and skip cleanly if it isn't present.
+ADL and CLI tests use generated synthetic data. Dimuon tests need
+`data/cms.root`; embedded database tests also need `monetdbe`. Tests skip when
+their prerequisites are unavailable. CI runs lint and tests on Python 3.10–3.12;
+it does not run a live MonetDB server.
+
+## Versioning and releases
+
+`hatch-vcs` derives the package version from Git tags. A clean checkout tagged
+`v0.1.1` builds version `0.1.1`; there is no static version to edit in
+`pyproject.toml`. Commit and push the intended changes before tagging a release.
+
+Publishing a GitHub release triggers `.github/workflows/release.yml`, which
+builds the wheel and source archive, tests the wheel, checks its version against
+the release tag, and uploads through PyPI Trusted Publishing. Pushing a tag
+alone does not trigger publishing. The configured publisher must use owner
+`ianna`, repository `awkward-monetizer`, workflow `release.yml`, and environment
+`pypi`. See [CONTRIBUTING.md](https://github.com/ianna/awkward-monetizer/blob/main/CONTRIBUTING.md#releases)
+for release setup.
 
 ## Status
 
 Ingestion, reconstruction, the live MonetDB round-trip, and ADL Q1–Q8 are
-implemented and validated (round-trip verified on a real MonetDB server; the
-reconstructed dimuon mass matches the stored `M` to ~1e-8). See `docs/roadmap.md`
-for what's next (real NanoAOD data, ROOT/RDataFrame benchmarks, Arrow Flight).
+implemented, along with chunked NanoAOD ingestion, backend benchmarks, Marimo
+notebooks, and a PyPI release workflow. Arrow transport, electron collections,
+and the Q6 b-tag quantity remain future work. The ROOT/RDataFrame backend is
+implemented but requires a separately installed ROOT environment.
 
 ## License
 
