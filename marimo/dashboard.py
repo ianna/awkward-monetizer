@@ -26,7 +26,7 @@ def _(mo):
     Pick an ADL query; the plot updates reactively. Reads the `nanoaod` tables
     from the running MonetDB **`hep`** server, rebuilds the nested event
     structure with `reconstruct_multi`, and runs the validated `adl` query
-    (no `ak.group_by`, real invariant mass / ΔR / transverse mass). Populate
+    (real invariant mass / ΔR / transverse mass). Populate
     the DB first: `awkward-monetizer ingest nano.root --dataset nanoaod
     --database hep --create-schema`.
     """)
