@@ -177,4 +177,4 @@ fetch, so the hybrid stays row-bound. Closing this needs an Arrow-Flight transpo
   `trijet_mass`/`trijet_pt`. Benchmarks showed a scalar per-row UDF is far slower
   than an inline vectorizable expression, so the hot paths now inline the math;
   UDFs remain the portable/readable reference. Python (`LANGUAGE PYTHON`) UDFs next.
-- Full replacement for ROOT/RDataFrame workflows
+- Full replacement for analysis workflows
