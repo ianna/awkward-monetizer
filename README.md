@@ -1,6 +1,6 @@
-# awkward-monetizer
+<img alt="awkward-monetizer" src="https://github.com/user-attachments/assets/f338abeb-68f9-4d06-a152-f4467759d9c0" />
 
-A hybrid High-Energy Physics (HEP) analysis engine that combines:
+A hybrid data analysis engine that combines:
 
 - **[MonetDB](https://www.monetdb.org/)** — fast, columnar SQL over event-level data
 - **[Awkward Array](https://awkward-array.org/)** — high-performance nested (NF2) physics analysis
