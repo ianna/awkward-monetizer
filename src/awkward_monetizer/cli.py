@@ -1,6 +1,6 @@
 """Unified command-line interface: ``awkward-monetizer <subcommand>``.
 
-Subcommands: ingest, manifest, reconstruct, roundtrip, adl, make-nano, bench.
+Subcommands: ingest, manifest, shards, reconstruct, roundtrip, adl, make-nano, bench.
 """
 
 from __future__ import annotations
@@ -128,7 +128,6 @@ def _cmd_roundtrip(args) -> None:
 
 def _cmd_adl(args) -> None:
     import awkward as ak
-    import numpy as np
 
     from .adl import events_from_root, run_all
 
@@ -138,11 +137,7 @@ def _cmd_adl(args) -> None:
           f"(jets/event mean {ak.mean(ak.num(events.jets, axis=1)):.2f}, "
           f"muons/event mean {ak.mean(ak.num(events.muons, axis=1)):.2f})\n")
     results = run_all(events)
-    for name, arr in results.items():
-        s = ("n=0" if arr.size == 0 else
-             f"n={arr.size:6d}  mean={np.nanmean(arr):8.2f}  "
-             f"min={np.nanmin(arr):7.2f}  max={np.nanmax(arr):7.2f}")
-        print(f"  {name:32s} {s}")
+    _print_adl(results)
     if args.plot:
         import matplotlib
         matplotlib.use("Agg")
@@ -156,6 +151,80 @@ def _cmd_adl(args) -> None:
         fig.tight_layout()
         fig.savefig(args.plot, dpi=110)
         print(f"\nsaved figure -> {args.plot}")
+
+
+def _print_adl(results) -> None:
+    import numpy as np
+    for name, arr in results.items():
+        arr = np.asarray([] if arr is None else arr)
+        s = ("n=0" if arr.size == 0 else
+             f"n={arr.size:6d}  mean={np.nanmean(arr):8.2f}  "
+             f"min={np.nanmin(arr):7.2f}  max={np.nanmax(arr):7.2f}")
+        print(f"  {name:32s} {s}")
+
+
+def _parse_shard_spec(spec: str, i: int, user: str, password: str) -> dict:
+    """``host[:port][/database]`` or ``embedded:/path/to/dbdir``."""
+    name = f"s{i}"
+    if spec.startswith("embedded:"):
+        return {"name": name, "backend": "embedded",
+                "target": spec[len("embedded:"):]}
+    hostport, _, database = spec.partition("/")
+    host, _, port = hostport.partition(":")
+    return {"name": name, "host": host or "localhost",
+            "port": int(port) if port else 50000,
+            "database": database or "hep", "user": user, "password": password}
+
+
+def _cmd_shards(args) -> None:
+    from .keys import Manifest
+    from .shards import ShardMap, ingest_manifest, map_events, verify
+
+    if args.shards_cmd == "init":
+        n_files = len(Manifest.from_json(args.manifest).files)
+        specs = [_parse_shard_spec(h, i, args.user, args.password)
+                 for i, h in enumerate(args.shard)]
+        smap = ShardMap.split(n_files, specs)
+        smap.to_json(args.out)
+        print(f"{args.out}: {len(smap)} shards for {n_files} files")
+        for sh in smap:
+            where = sh.target if sh.backend == "embedded" else (
+                f"{sh.host}:{sh.port}/{sh.database}")
+            print(f"  {sh.name}: file_ids [{sh.file_ids[0]}, {sh.file_ids[1]})"
+                  f"  -> {where}")
+        return
+
+    smap = ShardMap.from_json(args.shard_map)
+    if args.shards_cmd == "ingest":
+        from .datasets import DATASETS
+        from .shards import ShardError
+        try:
+            counts = ingest_manifest(
+                Manifest.from_json(args.manifest), smap, DATASETS[args.dataset],
+                step_size=args.step_size, tree=args.tree,
+                create_schema=args.create_schema,
+                use_copy_into=False if args.no_copy_into else None)
+        except (ValueError, ShardError) as e:
+            raise SystemExit(f"error: {e}") from e
+        for name, n in counts.items():
+            print(f"  {name}: {n} events")
+        print(f"done: {sum(counts.values())} events on {len(smap)} shards.")
+    elif args.shards_cmd == "verify":
+        bad = False
+        for r in verify(smap):
+            status = "OK" if not r["problems"] else "PROBLEMS"
+            counts = ", ".join(f"{k}={v}" for k, v in r.items()
+                               if k not in ("shard", "problems"))
+            print(f"  {r['shard']}: {status}  ({counts})")
+            for prob in r["problems"]:
+                print(f"      - {prob}")
+            bad |= bool(r["problems"])
+        if bad:
+            raise SystemExit(1)
+    elif args.shards_cmd == "adl":
+        from .adl import run_all
+        results = map_events(smap, run_all, where=args.where)
+        _print_adl(results or {})
 
 
 def _cmd_make_nano(args) -> None:
@@ -207,11 +276,17 @@ def _cmd_manifest(args) -> None:
     import os
 
     from .keys import Manifest, build_manifest, file_id_range
-    if os.path.exists(args.out):
+    if os.path.exists(args.out) and not args.fresh:
         m = Manifest.from_json(args.out)
         before = len(m.files)
         m.add(args.root_files, count_entries=args.count_entries, tree=args.tree)
         print(f"{args.out}: kept {before} files, added {len(m.files) - before}")
+        given = {os.path.abspath(p) for p in args.root_files}
+        extra = [f.path for f in m.files
+                 if "://" not in f.path and os.path.abspath(f.path) not in given]
+        if extra:
+            print(f"  note: also contains files not given here: {', '.join(extra)}"
+                  "\n  (existing ids never change; use --fresh to start over)")
     else:
         m = build_manifest(args.root_files, count_entries=args.count_entries,
                            tree=args.tree)
@@ -290,10 +365,38 @@ def build_parser() -> argparse.ArgumentParser:
     mf.add_argument("root_files", nargs="+")
     mf.add_argument("--out", default="manifest.json",
                     help="manifest to create, or extend if it exists")
+    mf.add_argument("--fresh", action="store_true",
+                    help="overwrite an existing manifest instead of extending it "
+                         "(renumbers files -- only before anything is ingested)")
     mf.add_argument("--count-entries", action="store_true",
                     help="open each file and record its entry count")
     mf.add_argument("--tree", default=None)
     mf.set_defaults(func=_cmd_manifest)
+
+    sh = sub.add_parser("shards", help="scatter-gather over several MonetDB shards")
+    shs = sh.add_subparsers(dest="shards_cmd", required=True)
+    si = shs.add_parser("init", help="split a manifest's file_ids over shards")
+    si.add_argument("--manifest", required=True)
+    si.add_argument("--shard", action="append", required=True, metavar="SPEC",
+                    help="host[:port][/database] or embedded:/dbdir; repeat per shard")
+    si.add_argument("--out", default="shards.json")
+    si.add_argument("--user", default="monetdb")
+    si.add_argument("--password", default="monetdb")
+    sg = shs.add_parser("ingest", help="load each manifest file into its shard")
+    sg.add_argument("shard_map")
+    sg.add_argument("--manifest", required=True)
+    sg.add_argument("--dataset", default="nanoaod")
+    sg.add_argument("--tree", default=None)
+    sg.add_argument("--step-size", type=_step_size, default="100 MB")
+    sg.add_argument("--create-schema", action="store_true")
+    sg.add_argument("--no-copy-into", action="store_true")
+    sv = shs.add_parser("verify", help="check shard ranges and orphan rows")
+    sv.add_argument("shard_map")
+    sa = shs.add_parser("adl", help="run ADL Q1-Q8 scatter-gather")
+    sa.add_argument("shard_map")
+    sa.add_argument("--where", default=None,
+                    help="SQL selection on events, pushed to every shard")
+    sh.set_defaults(func=_cmd_shards)
 
     rec = sub.add_parser("reconstruct", help="ROOT -> Awkward NF2 + validate (no DB)")
     rec.add_argument("root_file", nargs="?", default=DEFAULT_DIMUON)

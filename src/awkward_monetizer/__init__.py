@@ -14,6 +14,7 @@ from .reconstruct import (
     reconstruct_multi,
     tables_from_root,
 )
+from .shards import ShardMap, fetch_events, map_events
 
 try:
     __version__ = version("awkward-monetizer")
@@ -24,14 +25,17 @@ __all__ = [
     "DATASETS",
     "Dataset",
     "Manifest",
+    "ShardMap",
     "__version__",
     "build_manifest",
     "build_tables",
+    "fetch_events",
     "fetch_tables",
     "file_id_range",
     "invariant_mass",
     "load_tables",
     "make_event_ids",
+    "map_events",
     "opposite_charge_pair",
     "read_root",
     "reconstruct_events",

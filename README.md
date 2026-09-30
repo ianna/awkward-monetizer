@@ -280,6 +280,41 @@ never change. `--replace` deletes just that job's own `event_id` range before
 loading, so a crashed job can be re-run safely; `--truncate` empties the whole
 tables and is for single-writer loads only. Chunks are committed individually.
 
+### Sharding across several MonetDB servers
+
+Because each file owns a contiguous `event_id` range, the tables can be
+range-partitioned by `file_id` over several MonetDB servers so that every event
+and all of its objects live on exactly one shard. Joins, `reconstruct_multi`
+and per-event physics then run locally on each shard, and only results are
+merged (`awkward_monetizer.shards`):
+
+```bash
+awkward-monetizer manifest data/*.root --out manifest.json
+awkward-monetizer shards init --manifest manifest.json --out shards.json \
+    --shard node0:50000/hep --shard node1:50000/hep     # or embedded:/path/db
+awkward-monetizer shards ingest shards.json --manifest manifest.json --create-schema
+awkward-monetizer shards verify shards.json          # ranges + no orphan rows
+awkward-monetizer shards adl shards.json --where "met_pt > 25"
+```
+
+```python
+from awkward_monetizer import ShardMap, fetch_events, map_events, adl
+
+smap = ShardMap.from_json("shards.json")
+events = fetch_events(smap, where="met_pt > 25")      # one ak.Array, event_id order
+q6 = map_events(smap, adl.q6_trijet_pt)              # runs next to each shard
+```
+
+`map_events` merges per-shard results with `shards.combine`: arrays
+concatenate, numbers and `hist` objects add, dicts merge per key. Anything that
+needs all events at once (a global top-k, a normalisation) goes in the
+`reduce=` step. Server shards are queried from a thread pool; embedded monetdbe
+allows one database per process, so embedded shards use a process pool (pass
+module-level functions to `map_events`). The last shard's range is left open,
+so files appended to the manifest always have a home. `shards ingest` uses
+`COPY INTO` only for a server on this host and `INSERT` otherwise; bulk upload
+to remote servers is a separate step (`COPY ... ON CLIENT`).
+
 ## Marimo notebooks
 
 From a repository checkout with notebook dependencies installed:
