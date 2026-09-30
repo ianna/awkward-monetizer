@@ -25,6 +25,9 @@ root = ">=6.40.4,<7"
 awkward-cpp = { path = "awkward/awkward-cpp" }
 awkward = { path = "awkward", editable = true }
 uproot = "*"
+carbontracker = ">=2.4"   # energy/CO2 of the workflow (examples/carbon_workflow.py)
+# PDF reports: carbontracker[pdfreport] pins reportlab 3.6.13 (no py3.12 wheels)
+reportlab = ">=4"
 # The project itself, editable, so the `awkward-monetizer` CLI is on PATH.
 awkward-monetizer = { path = ".", editable = true }
 
@@ -54,3 +57,5 @@ bench = "awkward-monetizer bench --root-file data/cms.root --scale 20"
 notebook = "marimo edit examples/analysis.py"
 # Run the test suite
 test = "pytest"
+# Energy / carbon footprint per workflow stage (macOS: run `sudo -v` first)
+carbon = "python examples/carbon_workflow.py --shards shards.json --manifest manifest.json --pdf"

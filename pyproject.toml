@@ -26,6 +26,7 @@ notebook = ["marimo", "matplotlib", "mplhep", "hist"]
 embedded = ["monetdbe"]              # in-process MonetDB (Python <= 3.10 wheels)
 dev = ["pytest>=7", "ruff", "pre-commit"]
 ml = ["torch>=2"]                    # DeepSets demo: NF2 events -> PyTorch
+energy = ["carbontracker>=2.4", "reportlab>=4"]   # examples/carbon_workflow.py
 
 [project.scripts]
 awkward-monetizer = "awkward_monetizer.cli:main"

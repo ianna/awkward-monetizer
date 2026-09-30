@@ -48,3 +48,8 @@ __marimo__/
 .idea/
 .DS_Store
 *.swp
+
+# carbon_workflow.py output
+carbon_logs/
+carbon_workflow.json
+carbon_report.pdf
