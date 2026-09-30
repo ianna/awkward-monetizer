@@ -53,7 +53,8 @@ def _cmd_ingest(args) -> None:
                                     file_id=file_id,
                                     truncate=args.truncate,
                                     replace=args.replace,
-                                    use_copy_into=not args.no_copy_into)
+                                    use_copy_into=not args.no_copy_into,
+                                    method=_load_method(args))
             conn.commit()
             print(f"done: {n} events.")
         except Exception:
@@ -88,7 +89,8 @@ def _cmd_ingest(args) -> None:
     print(f"loading into MonetDB '{args.database}' ...")
     load_monetdb(tables, database=args.database, host=args.host, port=args.port,
                  user=args.user, password=args.password,
-                 truncate=args.truncate, use_copy_into=not args.no_copy_into)
+                 truncate=args.truncate, use_copy_into=not args.no_copy_into,
+                 method=_load_method(args))
     print("done.")
 
 
@@ -203,7 +205,7 @@ def _cmd_shards(args) -> None:
                 Manifest.from_json(args.manifest), smap, DATASETS[args.dataset],
                 step_size=args.step_size, tree=args.tree,
                 create_schema=args.create_schema,
-                use_copy_into=False if args.no_copy_into else None)
+                method="insert" if args.no_copy_into else args.load_method)
         except (ValueError, ShardError) as e:
             raise SystemExit(f"error: {e}") from e
         for name, n in counts.items():
@@ -263,6 +265,12 @@ def _cmd_bench(args) -> None:
 
 
 # --------------------------------------------------------------------------
+def _load_method(args) -> str | None:
+    if args.no_copy_into:
+        return "insert"
+    return args.load_method
+
+
 def _resolve_file_id(args) -> int:
     if args.manifest is not None and args.file_id is not None:
         raise SystemExit("use either --file-id or --manifest, not both")
@@ -355,7 +363,13 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--replace", action="store_true",
                      help="delete only this file/entry range first, so a job "
                           "can be re-run safely alongside other workers")
-    ing.add_argument("--no-copy-into", action="store_true")
+    ing.add_argument("--no-copy-into", action="store_true",
+                     help="same as --load-method insert")
+    ing.add_argument("--load-method", default=None,
+                     choices=("auto", "binary", "client", "copy", "insert"),
+                     help="copy (temp CSV, server on this host; default), binary/"
+                          "client (stream over the connection -- remote servers), "
+                          "insert, or auto")
     ing.add_argument("--dry-run", action="store_true")
     _add_server_args(ing)
     ing.set_defaults(func=_cmd_ingest)
@@ -389,7 +403,12 @@ def build_parser() -> argparse.ArgumentParser:
     sg.add_argument("--tree", default=None)
     sg.add_argument("--step-size", type=_step_size, default="100 MB")
     sg.add_argument("--create-schema", action="store_true")
-    sg.add_argument("--no-copy-into", action="store_true")
+    sg.add_argument("--load-method", default="auto",
+                    choices=("auto", "binary", "client", "copy", "insert"),
+                    help="auto: copy for a local server, binary upload for remote "
+                         "servers, insert for embedded")
+    sg.add_argument("--no-copy-into", action="store_true",
+                    help="same as --load-method insert")
     sv = shs.add_parser("verify", help="check shard ranges and orphan rows")
     sv.add_argument("shard_map")
     sa = shs.add_parser("adl", help="run ADL Q1-Q8 scatter-gather")

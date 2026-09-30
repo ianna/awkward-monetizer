@@ -128,34 +128,52 @@ def build_tables(events: ak.Array, ds: Dataset, id_offset: int = 0,
 # pandas -> MonetDB
 # --------------------------------------------------------------------------
 def load_tables(conn, tables: dict[str, pd.DataFrame], *,
-                truncate: bool = False, use_copy_into: bool = True) -> None:
+                truncate: bool = False, use_copy_into: bool = True,
+                method: str | None = None) -> None:
     """Load each DataFrame into its table using an existing DB-API connection.
 
-    Works with any MonetDB DB-API connection — pymonetdb (a running server) or
-    monetdbe (in-process/embedded). Tables must already exist.
+    ``method``: "copy" (temp CSV, server on this host), "client" (CSV streamed
+    over the connection), "binary" (per-column binary over the connection),
+    "insert" (DB-API INSERTs), or "auto" (:func:`.upload.choose_method`).
+    ``None`` keeps the old behaviour: "copy" if ``use_copy_into`` else
+    "insert". "client"/"binary" work against remote servers; see
+    :mod:`.upload`. Tables must already exist.
     """
+    from .upload import METHODS, choose_method, load_frame
+    if method is None:
+        method = "copy" if use_copy_into else "insert"
+    if method not in METHODS:
+        raise ValueError(f"unknown load method {method!r}; one of {METHODS}")
+    if method == "auto":
+        method = choose_method(conn)
     cur = conn.cursor()
     for name, df in tables.items():
         if truncate:
             cur.execute(f"DELETE FROM {name}")
-        if use_copy_into:
+        if method == "copy":
             _copy_into(cur, name, df)
-        else:
+            used = "COPY INTO"
+        elif method == "insert":
             _insert_many(cur, name, df)
-        print(f"  loaded {len(df):>8d} rows into {name}")
+            used = "INSERT"
+        else:
+            used = load_frame(conn, cur, name, df, method) + " upload"
+        print(f"  loaded {len(df):>8d} rows into {name} ({used})")
     conn.commit()
 
 
 def load_monetdb(tables: dict[str, pd.DataFrame], *, database: str,
                  host: str = "localhost", port: int = 50000,
                  user: str = "monetdb", password: str = "monetdb",
-                 truncate: bool = False, use_copy_into: bool = True) -> None:
+                 truncate: bool = False, use_copy_into: bool = True,
+                 method: str | None = None) -> None:
     """Open a pymonetdb server connection and load the tables (must exist)."""
     from .db import open_server
     conn = open_server(database=database, host=host, port=port,
                        user=user, password=password)
     try:
-        load_tables(conn, tables, truncate=truncate, use_copy_into=use_copy_into)
+        load_tables(conn, tables, truncate=truncate, use_copy_into=use_copy_into,
+                    method=method)
     except Exception:
         conn.rollback()
         raise
@@ -192,7 +210,8 @@ def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None
                         step_size="100 MB", entry_start: int | None = None,
                         entry_stop: int | None = None, file_id: int = 0,
                         use_copy_into: bool = True, truncate: bool = False,
-                        replace: bool = False, dry_run: bool = False) -> int:
+                        replace: bool = False, dry_run: bool = False,
+                        method: str | None = None) -> int:
     """Stream a (possibly huge) ROOT file into MonetDB in chunks with
     ``uproot.iterate``, so a multi-GB NanoAOD file never has to fit in memory.
     Reads only the dataset's branches. The tables must already exist. Returns
@@ -243,7 +262,8 @@ def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None
                 for name, df in tables.items():
                     print(f"  built {name}: {len(df)} rows x {len(df.columns)} cols")
             else:
-                load_tables(conn, tables, use_copy_into=use_copy_into)
+                load_tables(conn, tables, use_copy_into=use_copy_into,
+                            method=method)
             total += len(chunk)
             print(f"  ... {total} events {'read' if dry_run else 'ingested'}")
         if (truncate or replace) and not dry_run and total == 0:

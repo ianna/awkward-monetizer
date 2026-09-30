@@ -332,24 +332,28 @@ def map_events(smap: ShardMap, fn: Callable[[ak.Array], Any],
 def ingest_manifest(manifest: Manifest, smap: ShardMap, ds, *,
                     step_size="100 MB", tree: str | None = None,
                     use_copy_into: bool | None = None, create_schema: bool = False,
-                    max_workers: int | None = None,
-                    executor: str = "auto") -> dict[str, int]:
+                    max_workers: int | None = None, executor: str = "auto",
+                    method: str = "auto") -> dict[str, int]:
     """Load every manifest file into the shard that owns its ``file_id``.
 
     Files are grouped per shard and loaded shard-parallel (files for the same
     shard go sequentially over one connection). Each file is loaded with
     ``replace=True``, so re-running is idempotent. Returns events per shard.
 
-    ``use_copy_into=None`` (default) picks per shard: ``COPY INTO`` from a temp
-    CSV only for a server on this host (the server must be able to read the
-    file); ``INSERT`` for remote servers and embedded monetdbe (which cannot
-    ``COPY INTO``). Client-side bulk upload for remote shards is a separate step.
+    ``method="auto"`` picks per shard: ``copy`` (temp CSV + server-side COPY
+    INTO) for a server on this host, ``binary`` (columns streamed over the
+    connection with ``COPY BINARY ... ON CLIENT``) for remote servers, and
+    ``insert`` for embedded monetdbe (which cannot COPY INTO). Any method from
+    :data:`.upload.METHODS` can be forced for all shards. ``use_copy_into=False``
+    is kept for compatibility and means ``method="insert"``.
     """
     check_files(manifest, ds, tree=tree)
     by_shard: dict[str, list] = {s.name: [] for s in smap}
     for f in manifest.files:
         by_shard[smap.shard_for(f.file_id).name].append((f.path, f.file_id))
-    task = _IngestTask(by_shard, ds, step_size, tree, use_copy_into, create_schema)
+    if use_copy_into is False:
+        method = "insert"
+    task = _IngestTask(by_shard, ds, step_size, tree, method, create_schema)
     counts = scatter(smap, task, executor=executor, max_workers=max_workers)
     return {s.name: n for s, n in zip(smap, counts, strict=True)}
 
@@ -385,17 +389,21 @@ class _IngestTask:
     ds: Any
     step_size: Any
     tree: str | None
-    use_copy_into: bool | None
+    method: str
     create_schema: bool
 
-    def _copy(self, shard: Shard) -> bool:
-        local = (shard.backend == "server" and shard.connector is None
-                 and shard.host in ("localhost", "127.0.0.1", "::1"))
-        if self.use_copy_into is None:
-            return local
-        if self.use_copy_into and shard.backend == "embedded":
-            raise ValueError(f"shard {shard.name!r}: monetdbe cannot COPY INTO")
-        return self.use_copy_into
+    def _method(self, shard: Shard) -> str:
+        from .upload import LOCAL_HOSTS, METHODS
+        if self.method not in METHODS:
+            raise ValueError(f"unknown load method {self.method!r}")
+        if shard.backend == "embedded" or shard.connector is not None:
+            if self.method not in ("auto", "insert"):
+                raise ValueError(f"shard {shard.name!r}: only INSERT is possible "
+                                 f"on a non-server connection, not {self.method!r}")
+            return "insert"
+        if self.method == "auto":
+            return "copy" if shard.host in LOCAL_HOSTS else "binary"
+        return self.method
 
     def __call__(self, shard: Shard, conn) -> int:
         from . import db
@@ -406,7 +414,7 @@ class _IngestTask:
         for path, file_id in self.by_shard[shard.name]:
             total += ingest_root_chunked(
                 path, self.ds, conn, tree=self.tree, step_size=self.step_size,
-                file_id=file_id, replace=True, use_copy_into=self._copy(shard))
+                file_id=file_id, replace=True, method=self._method(shard))
         conn.commit()
         return total
 

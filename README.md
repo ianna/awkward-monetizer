@@ -311,9 +311,31 @@ needs all events at once (a global top-k, a normalisation) goes in the
 `reduce=` step. Server shards are queried from a thread pool; embedded monetdbe
 allows one database per process, so embedded shards use a process pool (pass
 module-level functions to `map_events`). The last shard's range is left open,
-so files appended to the manifest always have a home. `shards ingest` uses
-`COPY INTO` only for a server on this host and `INSERT` otherwise; bulk upload
-to remote servers is a separate step (`COPY ... ON CLIENT`).
+so files appended to the manifest always have a home.
+
+### Loading into remote servers
+
+`COPY INTO t FROM '/tmp/x.csv'` makes the *server* open the file, so it only
+works for a server on the same machine. For remote servers the data is streamed
+over the existing connection with `COPY ... ON CLIENT`, straight from memory
+(no temp files on either side). `--load-method` on `ingest` and `shards ingest`:
+
+| method   | how                                                        | use for |
+|----------|------------------------------------------------------------|---------|
+| `copy`   | temp CSV + server-side `COPY INTO`                         | server on this host |
+| `binary` | `COPY LITTLE ENDIAN BINARY ... ON CLIENT`, one array per column | remote servers (fastest; float32 widens to DOUBLE exactly) |
+| `client` | CSV streamed with `COPY ... ON CLIENT`                     | remote servers, any column types |
+| `insert` | DB-API `INSERT`s                                           | embedded monetdbe, other drivers |
+
+`shards ingest` defaults to `auto`: `copy` for `localhost`, `binary` for any
+other host, `insert` for embedded shards. `binary` falls back to `client` for a
+table with non-numeric columns. Requires pymonetdb >= 1.6 and a MonetDB server
+with `ON CLIENT` support (Jan2022 or newer). To check a server:
+
+```bash
+monetdb create hep_test && monetdb release hep_test
+AWKWARD_MONETIZER_TEST_DB=localhost/hep_test pytest tests/test_upload.py
+```
 
 ## Marimo notebooks
 
