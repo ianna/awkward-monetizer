@@ -18,6 +18,7 @@ import pandas as pd
 import uproot
 
 from .datasets import Dataset, JaggedCollection, WideCollection
+from .keys import MAX_ENTRY, make_event_id, make_event_ids
 
 
 # --------------------------------------------------------------------------
@@ -53,12 +54,23 @@ def read_root(path: str, ds: Dataset, tree: str | None,
 # --------------------------------------------------------------------------
 # Awkward -> flat pandas tables
 # --------------------------------------------------------------------------
-def build_events_table(events: ak.Array, ds: Dataset, id_offset: int = 0):
-    """Return (events DataFrame, event_id array reused by the collections)."""
+def build_events_table(events: ak.Array, ds: Dataset, id_offset: int = 0,
+                       file_id: int = 0):
+    """Return (events DataFrame, event_id array reused by the collections).
+
+    For synthetic ids (``ds.event_id == "row"``), ``id_offset`` is the entry
+    number of the first row *within the file* and ``file_id`` identifies the
+    file; ``event_id = (file_id << 40) | entry`` (see :mod:`.keys`). With the
+    default ``file_id=0`` this is just ``id_offset + row``.
+    """
     n = len(events)
     if ds.event_id == "row":
-        eid = np.arange(n, dtype=np.int64) + id_offset
+        eid = make_event_ids(file_id, np.arange(n, dtype=np.int64) + id_offset)
     else:
+        if file_id:
+            raise ValueError(
+                f"dataset {ds.name!r} takes event_id from branch "
+                f"{ds.event_id!r}; file_id only applies to synthetic ids")
         eid = np.asarray(events[ds.event_id])
     cols = {"event_id": eid}
     for dest, branch in ds.events.fields.items():
@@ -99,9 +111,10 @@ def build_wide(events: ak.Array, coll: WideCollection,
     return out.sort_values(["event_id", coll.index_col]).reset_index(drop=True)
 
 
-def build_tables(events: ak.Array, ds: Dataset,
-                 id_offset: int = 0) -> dict[str, pd.DataFrame]:
-    events_df, eid = build_events_table(events, ds, id_offset=id_offset)
+def build_tables(events: ak.Array, ds: Dataset, id_offset: int = 0,
+                 file_id: int = 0) -> dict[str, pd.DataFrame]:
+    events_df, eid = build_events_table(events, ds, id_offset=id_offset,
+                                        file_id=file_id)
     tables = {"events": events_df}
     for coll in ds.collections:
         if isinstance(coll, JaggedCollection):
@@ -176,28 +189,56 @@ def _insert_many(cur, table: str, df: pd.DataFrame) -> None:
 
 
 def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None,
-                        step_size="100 MB", entry_stop: int | None = None,
+                        step_size="100 MB", entry_start: int | None = None,
+                        entry_stop: int | None = None, file_id: int = 0,
                         use_copy_into: bool = True, truncate: bool = False,
-                        dry_run: bool = False) -> int:
+                        replace: bool = False, dry_run: bool = False) -> int:
     """Stream a (possibly huge) ROOT file into MonetDB in chunks with
     ``uproot.iterate``, so a multi-GB NanoAOD file never has to fit in memory.
-    Reads only the dataset's branches; synthesizes globally-unique ``event_id``
-    by offsetting each chunk. The tables must already exist. Returns the total
-    number of events loaded.
+    Reads only the dataset's branches. The tables must already exist. Returns
+    the total number of events loaded.
+
+    ``event_id`` is ``(file_id << 40) | entry`` where ``entry`` is the event's
+    entry number in the file (see :mod:`.keys`). It is therefore independent of
+    ``step_size`` and of how the file is split, so parallel jobs -- different
+    files with different ``file_id``, or disjoint ``[entry_start, entry_stop)``
+    ranges of one file -- can load into the same tables without collisions.
+
+    ``truncate`` empties the whole tables first (single-writer use only).
+    ``replace`` deletes only this job's own ``event_id`` range -- this file,
+    ``[entry_start, entry_stop)`` -- so a failed or repeated job can be re-run
+    idempotently without touching rows loaded by other workers.
 
     With dry_run=True, build and summarize each chunk without using conn.
     Truncation happens once before loading, including for an empty input.
     """
     total = 0
+    first = int(entry_start or 0)
+    if first < 0:
+        raise ValueError("entry_start must be >= 0")
     with uproot.open(path) as f:
         t = open_tree(f, tree if tree is not None else ds.tree)
+        tables_to_clear = [c.table for c in ds.collections] + ["events"]
         if truncate and not dry_run:
             cur = conn.cursor()
-            for name in [c.table for c in ds.collections] + ["events"]:
+            for name in tables_to_clear:
                 cur.execute(f"DELETE FROM {name}")
+        elif replace and not dry_run:
+            if ds.event_id != "row":
+                raise ValueError("replace needs synthetic (file_id, entry) ids")
+            lo = make_event_id(file_id, first)
+            hi = make_event_id(file_id, min(int(entry_stop), MAX_ENTRY)
+                               if entry_stop is not None else MAX_ENTRY)
+            # entry_stop is exclusive; with no stop, clear to the end of the file
+            op = "<" if entry_stop is not None else "<="
+            cur = conn.cursor()
+            for name in tables_to_clear:
+                cur.execute(f"DELETE FROM {name} WHERE event_id >= {lo} "
+                            f"AND event_id {op} {hi}")
         for chunk in t.iterate(ds.all_branches(), step_size=step_size,
-                               entry_stop=entry_stop):
-            tables = build_tables(chunk, ds, id_offset=total)
+                               entry_start=first, entry_stop=entry_stop):
+            tables = build_tables(chunk, ds, id_offset=first + total,
+                                  file_id=file_id)
             if dry_run:
                 for name, df in tables.items():
                     print(f"  built {name}: {len(df)} rows x {len(df.columns)} cols")
@@ -205,6 +246,6 @@ def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None
                 load_tables(conn, tables, use_copy_into=use_copy_into)
             total += len(chunk)
             print(f"  ... {total} events {'read' if dry_run else 'ingested'}")
-        if truncate and not dry_run and total == 0:
+        if (truncate or replace) and not dry_run and total == 0:
             conn.commit()
     return total

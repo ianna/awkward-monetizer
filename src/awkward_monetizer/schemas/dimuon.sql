@@ -1,6 +1,6 @@
 -- Schema for the flat CMS dimuon teaching ntuple (the 'dimuon' dataset).
 -- Column order matches the DataFrames ingest builds, so COPY INTO (headerless
--- CSV) loads them positionally. event_id is a synthetic row id (0..N-1).
+-- CSV) loads them positionally. event_id is (file_id << 40) | entry; with file_id 0 it is the row id 0..N-1.
 
 CREATE TABLE events (
     event_id     BIGINT PRIMARY KEY,

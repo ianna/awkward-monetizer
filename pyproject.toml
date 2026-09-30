@@ -25,6 +25,7 @@ dependencies = [
 notebook = ["marimo", "matplotlib", "mplhep", "hist"]
 embedded = ["monetdbe"]              # in-process MonetDB (Python <= 3.10 wheels)
 dev = ["pytest>=7", "ruff", "pre-commit"]
+ml = ["torch>=2"]                    # DeepSets demo: NF2 events -> PyTorch
 
 [project.scripts]
 awkward-monetizer = "awkward_monetizer.cli:main"

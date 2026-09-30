@@ -1,6 +1,6 @@
 """Unified command-line interface: ``awkward-monetizer <subcommand>``.
 
-Subcommands: ingest, reconstruct, roundtrip, adl, make-nano.
+Subcommands: ingest, manifest, reconstruct, roundtrip, adl, make-nano, bench.
 """
 
 from __future__ import annotations
@@ -20,13 +20,21 @@ def _cmd_ingest(args) -> None:
     from .ingest import build_tables, ingest_root_chunked, load_monetdb, read_root
 
     ds = DATASETS[args.dataset]
+    file_id = _resolve_file_id(args)
+    if (args.entry_start is not None or args.replace) and not args.step_size:
+        raise SystemExit("--entry-start/--replace require --step-size")
+    if args.replace and args.truncate:
+        raise SystemExit("use either --truncate or --replace, not both")
+    if file_id:
+        print(f"file_id={file_id} -> event_id = ({file_id} << 40) | entry")
 
     # Chunked streaming path for large (real NanoAOD) files.
     if args.step_size:
         if args.dry_run:
             n = ingest_root_chunked(
                 args.root_file, ds, None, tree=args.tree,
-                step_size=args.step_size, entry_stop=args.entry_stop, dry_run=True,
+                step_size=args.step_size, entry_start=args.entry_start,
+                entry_stop=args.entry_stop, file_id=file_id, dry_run=True,
             )
             print(f"dry run -- {n} events; not loading into MonetDB")
             return
@@ -40,8 +48,11 @@ def _cmd_ingest(args) -> None:
                   f"in chunks of {args.step_size} ...")
             n = ingest_root_chunked(args.root_file, ds, conn, tree=args.tree,
                                     step_size=args.step_size,
+                                    entry_start=args.entry_start,
                                     entry_stop=args.entry_stop,
+                                    file_id=file_id,
                                     truncate=args.truncate,
+                                    replace=args.replace,
                                     use_copy_into=not args.no_copy_into)
             conn.commit()
             print(f"done: {n} events.")
@@ -57,7 +68,7 @@ def _cmd_ingest(args) -> None:
     events, tree = read_root(args.root_file, ds, args.tree,
                              entry_stop=args.entry_stop)
     print(f"  tree {tree!r}: {len(events)} events")
-    tables = build_tables(events, ds)
+    tables = build_tables(events, ds, file_id=file_id)
     for name, df in tables.items():
         print(f"  built {name}: {len(df)} rows x {len(df.columns)} cols "
               f"[{', '.join(df.columns)}]")
@@ -183,6 +194,35 @@ def _cmd_bench(args) -> None:
 
 
 # --------------------------------------------------------------------------
+def _resolve_file_id(args) -> int:
+    if args.manifest is not None and args.file_id is not None:
+        raise SystemExit("use either --file-id or --manifest, not both")
+    if args.manifest is not None:
+        from .keys import Manifest
+        return Manifest.from_json(args.manifest).file_id(args.root_file)
+    return args.file_id or 0
+
+
+def _cmd_manifest(args) -> None:
+    import os
+
+    from .keys import Manifest, build_manifest, file_id_range
+    if os.path.exists(args.out):
+        m = Manifest.from_json(args.out)
+        before = len(m.files)
+        m.add(args.root_files, count_entries=args.count_entries, tree=args.tree)
+        print(f"{args.out}: kept {before} files, added {len(m.files) - before}")
+    else:
+        m = build_manifest(args.root_files, count_entries=args.count_entries,
+                           tree=args.tree)
+        print(f"{args.out}: {len(m.files)} files")
+    for f in m.files:
+        lo, hi = file_id_range(f.file_id)
+        n = "" if f.n_entries is None else f"  {f.n_entries} entries"
+        print(f"  {f.file_id:>6d}  [{lo}, {hi})  {f.path}{n}")
+    m.to_json(args.out)
+
+
 # Parser
 # --------------------------------------------------------------------------
 def _add_server_args(sp) -> None:
@@ -203,6 +243,14 @@ def _step_size(value: str) -> int | str:
     return count
 
 
+def _nonneg_int(value: str) -> int:
+    from .keys import MAX_FILE_ID
+    n = int(value)
+    if not 0 <= n <= MAX_FILE_ID:
+        raise argparse.ArgumentTypeError(f"must be in [0, {MAX_FILE_ID}]")
+    return n
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="awkward-monetizer",
                                 description="Hybrid Awkward + MonetDB HEP engine.")
@@ -212,17 +260,40 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("root_file", nargs="?", default=DEFAULT_DIMUON)
     ing.add_argument("--dataset", default="dimuon")
     ing.add_argument("--tree", default=None)
+    ing.add_argument("--entry-start", type=int, default=None,
+                     help="first entry to read (chunked mode); with --entry-stop "
+                          "lets several jobs split one file")
     ing.add_argument("--entry-stop", type=int, default=None)
+    ing.add_argument("--file-id", type=_nonneg_int, default=None,
+                     help="stable per-file id: event_id = (file_id << 40) | entry "
+                          "(default 0 = plain entry number)")
+    ing.add_argument("--manifest", default=None, metavar="JSON",
+                     help="look up --file-id for root_file in a manifest "
+                          "(see `awkward-monetizer manifest`)")
     ing.add_argument("--step-size", type=_step_size, default=None,
                      help="stream in chunks of this size (e.g. '100 MB' or 50000) "
                           "for large files; requires a running server")
     ing.add_argument("--create-schema", action="store_true",
                      help="(re)create the dataset's schema before loading")
-    ing.add_argument("--truncate", action="store_true")
+    ing.add_argument("--truncate", action="store_true",
+                     help="empty the tables first (single writer only)")
+    ing.add_argument("--replace", action="store_true",
+                     help="delete only this file/entry range first, so a job "
+                          "can be re-run safely alongside other workers")
     ing.add_argument("--no-copy-into", action="store_true")
     ing.add_argument("--dry-run", action="store_true")
     _add_server_args(ing)
     ing.set_defaults(func=_cmd_ingest)
+
+    mf = sub.add_parser("manifest",
+                        help="assign stable file_ids to input files (JSON)")
+    mf.add_argument("root_files", nargs="+")
+    mf.add_argument("--out", default="manifest.json",
+                    help="manifest to create, or extend if it exists")
+    mf.add_argument("--count-entries", action="store_true",
+                    help="open each file and record its entry count")
+    mf.add_argument("--tree", default=None)
+    mf.set_defaults(func=_cmd_manifest)
 
     rec = sub.add_parser("reconstruct", help="ROOT -> Awkward NF2 + validate (no DB)")
     rec.add_argument("root_file", nargs="?", default=DEFAULT_DIMUON)

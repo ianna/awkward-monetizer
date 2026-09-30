@@ -120,9 +120,16 @@ object's position so nesting round-trips exactly. Two layouts (`--dataset`):
   `M`. Un-pivoted into a `muons` table. Schema: `schemas/dimuon.sql`.
 - **nanoaod** — jagged per-event lists (`Jet_pt`, `Muon_pt`, …) exploded into
   `jets`/`muons`, plus MET. Schema: `schemas/nanoaod.sql`. Matches real CMS
-  NanoAODv9 branch names/types; `event_id` is synthesized from a row index
-  (because `event` alone isn't unique in NanoAOD — the key is run+lumi+event,
-  kept as `run`/`lumi`/`event_number` columns).
+  NanoAODv9 branch names/types; `event_id` is synthesized (because `event`
+  alone isn't unique in NanoAOD — the key is run+lumi+event, kept as
+  `run`/`lumi`/`event_number` columns).
+
+Synthetic `event_id` is `(file_id << 40) | entry` (`awkward_monetizer.keys`):
+a per-file id plus the event's entry number in that file. It is a plain signed
+BIGINT, independent of chunking and of which worker loads the file, and each
+file owns a contiguous range (`file_id_range`) — ready for range-partitioning
+across MonetDB shards. `file_id` defaults to 0, which gives the original
+`0..N-1` numbering.
 
 ## Live MonetDB round-trip
 
@@ -242,8 +249,7 @@ awkward-monetizer ingest 127C2975-*.root --dataset nanoaod --database hep \
     --create-schema --step-size "100 MB" --entry-stop 200000
 ```
 
-`--step-size` streams with `uproot.iterate` (each chunk is offset so `event_id`
-stays unique within that ingestion call), bounding the input read to a chunk;
+`--step-size` streams with `uproot.iterate`, bounding the input read to a chunk;
 `--create-schema` (re)creates the tables first. Then the `nanoaod` ADL queries
 and benchmarks run on real physics.
 
@@ -251,9 +257,28 @@ and benchmarks run on real physics.
 to build and summarize chunks without connecting to MonetDB, or `--truncate`
 to clear the dataset's tables once before loading the chunks.
 
-Each ingestion call starts event IDs at zero; use `--truncate` or
-`--create-schema` when replacing a previous load. Appending multiple files with
-separate CLI calls is not supported. Chunks are committed individually.
+### Many files / parallel ingest
+
+Give every input file a stable `file_id` with a manifest, then ingest files (or
+entry ranges of one file) independently — in any order, from any number of
+workers — into the same tables without `event_id` collisions:
+
+```bash
+awkward-monetizer manifest data/*.root --out manifest.json --count-entries --tree Events
+# one job per file (run these in parallel)
+awkward-monetizer ingest data/a.root --dataset nanoaod --manifest manifest.json \
+    --step-size "100 MB" --replace
+# or split one big file across two jobs
+awkward-monetizer ingest big.root --dataset nanoaod --file-id 7 --step-size 50000 \
+    --entry-stop 1000000 --replace
+awkward-monetizer ingest big.root --dataset nanoaod --file-id 7 --step-size 50000 \
+    --entry-start 1000000 --replace
+```
+
+Re-running `manifest` on an existing JSON only appends new files; existing ids
+never change. `--replace` deletes just that job's own `event_id` range before
+loading, so a crashed job can be re-run safely; `--truncate` empties the whole
+tables and is for single-writer loads only. Chunks are committed individually.
 
 ## Marimo notebooks
 

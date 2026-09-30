@@ -3,7 +3,7 @@
 -- ingest builds. (A 'tracks' table is planned but not yet loaded.)
 
 CREATE TABLE events (
-    event_id     BIGINT PRIMARY KEY,   -- synthetic row id (unique across chunks)
+    event_id     BIGINT PRIMARY KEY,   -- (file_id << 40) | entry  (see keys.py)
     run          INT,
     lumi         INT,                  -- luminosityBlock
     event_number BIGINT,               -- NanoAOD `event` (not unique on its own)
