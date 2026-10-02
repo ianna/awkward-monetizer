@@ -18,7 +18,7 @@ import pandas as pd
 import uproot
 
 from .datasets import Dataset, JaggedCollection, WideCollection
-from .keys import MAX_ENTRY, make_event_id, make_event_ids
+from .keys import DEFAULT_LAYOUT, KeyLayout
 
 
 # --------------------------------------------------------------------------
@@ -55,7 +55,7 @@ def read_root(path: str, ds: Dataset, tree: str | None,
 # Awkward -> flat pandas tables
 # --------------------------------------------------------------------------
 def build_events_table(events: ak.Array, ds: Dataset, id_offset: int = 0,
-                       file_id: int = 0):
+                       file_id: int = 0, layout: KeyLayout = DEFAULT_LAYOUT):
     """Return (events DataFrame, event_id array reused by the collections).
 
     For synthetic ids (``ds.event_id == "row"``), ``id_offset`` is the entry
@@ -65,7 +65,8 @@ def build_events_table(events: ak.Array, ds: Dataset, id_offset: int = 0,
     """
     n = len(events)
     if ds.event_id == "row":
-        eid = make_event_ids(file_id, np.arange(n, dtype=np.int64) + id_offset)
+        eid = layout.make_event_ids(file_id,
+                                    np.arange(n, dtype=np.int64) + id_offset)
     else:
         if file_id:
             raise ValueError(
@@ -112,9 +113,10 @@ def build_wide(events: ak.Array, coll: WideCollection,
 
 
 def build_tables(events: ak.Array, ds: Dataset, id_offset: int = 0,
-                 file_id: int = 0) -> dict[str, pd.DataFrame]:
+                 file_id: int = 0,
+                 layout: KeyLayout = DEFAULT_LAYOUT) -> dict[str, pd.DataFrame]:
     events_df, eid = build_events_table(events, ds, id_offset=id_offset,
-                                        file_id=file_id)
+                                        file_id=file_id, layout=layout)
     tables = {"events": events_df}
     for coll in ds.collections:
         if isinstance(coll, JaggedCollection):
@@ -211,7 +213,8 @@ def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None
                         entry_stop: int | None = None, file_id: int = 0,
                         use_copy_into: bool = True, truncate: bool = False,
                         replace: bool = False, dry_run: bool = False,
-                        method: str | None = None) -> int:
+                        method: str | None = None,
+                        layout: KeyLayout = DEFAULT_LAYOUT) -> int:
     """Stream a (possibly huge) ROOT file into MonetDB in chunks with
     ``uproot.iterate``, so a multi-GB NanoAOD file never has to fit in memory.
     Reads only the dataset's branches. The tables must already exist. Returns
@@ -245,9 +248,10 @@ def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None
         elif replace and not dry_run:
             if ds.event_id != "row":
                 raise ValueError("replace needs synthetic (file_id, entry) ids")
-            lo = make_event_id(file_id, first)
-            hi = make_event_id(file_id, min(int(entry_stop), MAX_ENTRY)
-                               if entry_stop is not None else MAX_ENTRY)
+            last = (min(int(entry_stop), layout.max_entry)
+                    if entry_stop is not None else layout.max_entry)
+            lo = int(layout.make_event_ids(file_id, [first])[0])
+            hi = int(layout.make_event_ids(file_id, [last])[0])
             # entry_stop is exclusive; with no stop, clear to the end of the file
             op = "<" if entry_stop is not None else "<="
             cur = conn.cursor()
@@ -257,7 +261,7 @@ def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None
         for chunk in t.iterate(ds.all_branches(), step_size=step_size,
                                entry_start=first, entry_stop=entry_stop):
             tables = build_tables(chunk, ds, id_offset=first + total,
-                                  file_id=file_id)
+                                  file_id=file_id, layout=layout)
             if dry_run:
                 for name, df in tables.items():
                     print(f"  built {name}: {len(df)} rows x {len(df.columns)} cols")

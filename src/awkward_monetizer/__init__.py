@@ -6,7 +6,15 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .datasets import DATASETS, Dataset
 from .ingest import build_tables, load_tables, read_root
-from .keys import Manifest, build_manifest, file_id_range, make_event_ids, split_event_ids
+from .keys import (
+    EXABYTE_LAYOUT,
+    KeyLayout,
+    Manifest,
+    build_manifest,
+    file_id_range,
+    make_event_ids,
+    split_event_ids,
+)
 from .physics import invariant_mass, opposite_charge_pair
 from .reconstruct import (
     fetch_tables,
@@ -23,7 +31,9 @@ except PackageNotFoundError:  # not installed (e.g. running from a source tree)
 
 __all__ = [
     "DATASETS",
+    "EXABYTE_LAYOUT",
     "Dataset",
+    "KeyLayout",
     "Manifest",
     "ShardMap",
     "__version__",

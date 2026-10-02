@@ -20,13 +20,14 @@ def _cmd_ingest(args) -> None:
     from .ingest import build_tables, ingest_root_chunked, load_monetdb, read_root
 
     ds = DATASETS[args.dataset]
-    file_id = _resolve_file_id(args)
+    file_id, layout = _resolve_file_id(args)
     if (args.entry_start is not None or args.replace) and not args.step_size:
         raise SystemExit("--entry-start/--replace require --step-size")
     if args.replace and args.truncate:
         raise SystemExit("use either --truncate or --replace, not both")
     if file_id:
-        print(f"file_id={file_id} -> event_id = ({file_id} << 40) | entry")
+        print(f"file_id={file_id} -> event_id = "
+              f"({file_id} << {layout.entry_bits}) | entry")
 
     # Chunked streaming path for large (real NanoAOD) files.
     if args.step_size:
@@ -35,6 +36,7 @@ def _cmd_ingest(args) -> None:
                 args.root_file, ds, None, tree=args.tree,
                 step_size=args.step_size, entry_start=args.entry_start,
                 entry_stop=args.entry_stop, file_id=file_id, dry_run=True,
+                layout=layout,
             )
             print(f"dry run -- {n} events; not loading into MonetDB")
             return
@@ -50,7 +52,7 @@ def _cmd_ingest(args) -> None:
                                     step_size=args.step_size,
                                     entry_start=args.entry_start,
                                     entry_stop=args.entry_stop,
-                                    file_id=file_id,
+                                    file_id=file_id, layout=layout,
                                     truncate=args.truncate,
                                     replace=args.replace,
                                     use_copy_into=not args.no_copy_into,
@@ -69,7 +71,7 @@ def _cmd_ingest(args) -> None:
     events, tree = read_root(args.root_file, ds, args.tree,
                              entry_stop=args.entry_stop)
     print(f"  tree {tree!r}: {len(events)} events")
-    tables = build_tables(events, ds, file_id=file_id)
+    tables = build_tables(events, ds, file_id=file_id, layout=layout)
     for name, df in tables.items():
         print(f"  built {name}: {len(df)} rows x {len(df.columns)} cols "
               f"[{', '.join(df.columns)}]")
@@ -183,12 +185,14 @@ def _cmd_shards(args) -> None:
     from .shards import ShardMap, ingest_manifest, map_events, verify
 
     if args.shards_cmd == "init":
-        n_files = len(Manifest.from_json(args.manifest).files)
+        manifest = Manifest.from_json(args.manifest)
+        n_files = len(manifest.files)
         specs = [_parse_shard_spec(h, i, args.user, args.password)
                  for i, h in enumerate(args.shard)]
-        smap = ShardMap.split(n_files, specs)
+        smap = ShardMap.split(n_files, specs, layout=manifest.layout)
         smap.to_json(args.out)
-        print(f"{args.out}: {len(smap)} shards for {n_files} files")
+        print(f"{args.out}: {len(smap)} shards for {n_files} files "
+              f"({smap.layout.entry_bits} entry bits)")
         for sh in smap:
             where = sh.target if sh.backend == "embedded" else (
                 f"{sh.host}:{sh.port}/{sh.database}")
@@ -211,6 +215,32 @@ def _cmd_shards(args) -> None:
         for name, n in counts.items():
             print(f"  {name}: {n} events")
         print(f"done: {sum(counts.values())} events on {len(smap)} shards.")
+    elif args.shards_cmd == "migrate":
+        from .datasets import DATASETS
+        from .keys import KeyLayout, migrate_tables
+        ds = DATASETS[args.dataset]
+        tables = ["events"] + [c.table for c in ds.collections]
+        old, new = smap.layout, KeyLayout(args.entry_bits)
+        manifest = Manifest.from_json(args.manifest).with_layout(new)
+        new_map = ShardMap(smap.shards, layout=new)      # validates file-id range
+        try:
+            for check_only in (True, False):   # check every shard before any change
+                for sh in smap:
+                    conn = sh.connect()
+                    try:
+                        counts = migrate_tables(conn, tables, old, new,
+                                                check_only=check_only)
+                    finally:
+                        conn.close()
+                    if not check_only:
+                        print(f"  {sh.name}: converted "
+                              + ", ".join(f"{t}={n}" for t, n in counts.items()))
+        except ValueError as e:
+            raise SystemExit(f"error: {e}") from e
+        new_map.to_json(args.shard_map)
+        manifest.to_json(args.manifest)
+        print(f"done: {old.entry_bits} -> {new.entry_bits} entry bits; "
+              f"updated {args.shard_map} and {args.manifest}.")
     elif args.shards_cmd == "verify":
         bad = False
         for r in verify(smap):
@@ -271,21 +301,35 @@ def _load_method(args) -> str | None:
     return args.load_method
 
 
-def _resolve_file_id(args) -> int:
+def _resolve_file_id(args):
+    """Return (file_id, key layout) from --manifest or --file-id/--entry-bits."""
+    from .keys import DEFAULT_LAYOUT, KeyLayout, Manifest
     if args.manifest is not None and args.file_id is not None:
         raise SystemExit("use either --file-id or --manifest, not both")
     if args.manifest is not None:
-        from .keys import Manifest
-        return Manifest.from_json(args.manifest).file_id(args.root_file)
-    return args.file_id or 0
+        if args.entry_bits is not None:
+            raise SystemExit("--entry-bits comes from the manifest; omit it")
+        m = Manifest.from_json(args.manifest)
+        return m.file_id(args.root_file), m.layout
+    layout = (KeyLayout(args.entry_bits) if args.entry_bits is not None
+              else DEFAULT_LAYOUT)
+    try:
+        return layout.check_file_id(args.file_id or 0), layout
+    except ValueError as e:
+        raise SystemExit(f"error: {e}") from e
 
 
 def _cmd_manifest(args) -> None:
     import os
 
-    from .keys import Manifest, build_manifest, file_id_range
+    from .keys import DEFAULT_LAYOUT, KeyLayout, Manifest, build_manifest
     if os.path.exists(args.out) and not args.fresh:
         m = Manifest.from_json(args.out)
+        if args.entry_bits is not None and args.entry_bits != m.layout.entry_bits:
+            raise SystemExit(
+                f"{args.out} uses {m.layout.entry_bits} entry bits; a manifest's "
+                "key layout cannot change when files are appended "
+                "(see `shards migrate`)")
         before = len(m.files)
         m.add(args.root_files, count_entries=args.count_entries, tree=args.tree)
         print(f"{args.out}: kept {before} files, added {len(m.files) - before}")
@@ -296,11 +340,15 @@ def _cmd_manifest(args) -> None:
             print(f"  note: also contains files not given here: {', '.join(extra)}"
                   "\n  (existing ids never change; use --fresh to start over)")
     else:
+        layout = (KeyLayout(args.entry_bits) if args.entry_bits is not None
+                  else DEFAULT_LAYOUT)
         m = build_manifest(args.root_files, count_entries=args.count_entries,
-                           tree=args.tree)
+                           tree=args.tree, layout=layout)
         print(f"{args.out}: {len(m.files)} files")
+    print(f"  key layout: {m.layout.file_bits} file bits, "
+          f"{m.layout.entry_bits} entry bits")
     for f in m.files:
-        lo, hi = file_id_range(f.file_id)
+        lo, hi = m.layout.file_id_range(f.file_id)
         n = "" if f.n_entries is None else f"  {f.n_entries} entries"
         print(f"  {f.file_id:>6d}  [{lo}, {hi})  {f.path}{n}")
     m.to_json(args.out)
@@ -327,10 +375,9 @@ def _step_size(value: str) -> int | str:
 
 
 def _nonneg_int(value: str) -> int:
-    from .keys import MAX_FILE_ID
     n = int(value)
-    if not 0 <= n <= MAX_FILE_ID:
-        raise argparse.ArgumentTypeError(f"must be in [0, {MAX_FILE_ID}]")
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
     return n
 
 
@@ -350,6 +397,9 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--file-id", type=_nonneg_int, default=None,
                      help="stable per-file id: event_id = (file_id << 40) | entry "
                           "(default 0 = plain entry number)")
+    ing.add_argument("--entry-bits", type=int, default=None,
+                     help="key layout with --file-id: bits for the entry number "
+                          "(default 40; 31 allows 4.3 billion files)")
     ing.add_argument("--manifest", default=None, metavar="JSON",
                      help="look up --file-id for root_file in a manifest "
                           "(see `awkward-monetizer manifest`)")
@@ -379,6 +429,9 @@ def build_parser() -> argparse.ArgumentParser:
     mf.add_argument("root_files", nargs="+")
     mf.add_argument("--out", default="manifest.json",
                     help="manifest to create, or extend if it exists")
+    mf.add_argument("--entry-bits", type=int, default=None,
+                    help="key layout for a new manifest: bits for the entry number "
+                         "(default 40 = 8.4 million files; 31 = 4.3 billion files)")
     mf.add_argument("--fresh", action="store_true",
                     help="overwrite an existing manifest instead of extending it "
                          "(renumbers files -- only before anything is ingested)")
@@ -409,6 +462,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "servers, insert for embedded")
     sg.add_argument("--no-copy-into", action="store_true",
                     help="same as --load-method insert")
+    sm = shs.add_parser("migrate", help="convert stored keys to another layout")
+    sm.add_argument("shard_map")
+    sm.add_argument("--manifest", required=True)
+    sm.add_argument("--entry-bits", type=int, required=True)
+    sm.add_argument("--dataset", default="nanoaod")
     sv = shs.add_parser("verify", help="check shard ranges and orphan rows")
     sv.add_argument("shard_map")
     sa = shs.add_parser("adl", help="run ADL Q1-Q8 scatter-gather")

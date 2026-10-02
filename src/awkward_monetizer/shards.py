@@ -40,7 +40,7 @@ from typing import Any
 import awkward as ak
 import numpy as np
 
-from .keys import MAX_FILE_ID, Manifest, file_id_range
+from .keys import DEFAULT_LAYOUT, KeyLayout, Manifest
 
 
 # --------------------------------------------------------------------------
@@ -63,7 +63,7 @@ class Shard:
 
     def __post_init__(self):
         first, stop = (int(x) for x in self.file_ids)
-        if not 0 <= first < stop <= MAX_FILE_ID + 1:
+        if not 0 <= first < stop:
             raise ValueError(f"shard {self.name!r}: bad file_ids {self.file_ids}")
         self.file_ids = (first, stop)
         if self.backend not in ("server", "embedded"):
@@ -74,11 +74,15 @@ class Shard:
     def owns(self, file_id: int) -> bool:
         return self.file_ids[0] <= file_id < self.file_ids[1]
 
+    def key_range(self, layout: KeyLayout = DEFAULT_LAYOUT) -> tuple[int, int]:
+        """Half-open ``[lo, hi)`` event_id range owned by this shard."""
+        return (layout.file_id_range(self.file_ids[0])[0],
+                layout.file_id_range(self.file_ids[1] - 1)[1])
+
     @property
     def event_id_range(self) -> tuple[int, int]:
-        """Half-open ``[lo, hi)`` event_id range owned by this shard."""
-        return (file_id_range(self.file_ids[0])[0],
-                file_id_range(self.file_ids[1] - 1)[1])
+        """:meth:`key_range` under the default key layout."""
+        return self.key_range()
 
     def connect(self):
         if self.connector is not None:
@@ -100,8 +104,15 @@ class Shard:
 class ShardMap:
     """Ordered, non-overlapping shards covering (part of) the file_id space."""
 
-    def __init__(self, shards: Sequence[Shard]):
+    def __init__(self, shards: Sequence[Shard],
+                 layout: KeyLayout = DEFAULT_LAYOUT):
+        self.layout = layout
         self.shards = sorted(shards, key=lambda s: s.file_ids[0])
+        for s in self.shards:
+            if s.file_ids[1] > layout.max_file_id + 1:
+                raise ValueError(
+                    f"shard {s.name!r}: file_ids {s.file_ids} exceed the "
+                    f"{layout.file_bits}-bit file-id range of the key layout")
         names = [s.name for s in self.shards]
         if len(set(names)) != len(names):
             raise ValueError("duplicate shard names")
@@ -132,15 +143,18 @@ class ShardMap:
     def from_json(cls, path: str) -> ShardMap:
         with open(path) as fh:
             data = json.load(fh)
-        return cls([Shard(**s) for s in data["shards"]])
+        layout = KeyLayout(int(data.get("entry_bits", DEFAULT_LAYOUT.entry_bits)))
+        return cls([Shard(**s) for s in data["shards"]], layout=layout)
 
     def to_json(self, path: str) -> None:
         with open(path, "w") as fh:
-            json.dump({"shards": [s.to_dict() for s in self.shards]}, fh, indent=2)
+            json.dump({"entry_bits": self.layout.entry_bits,
+                       "shards": [s.to_dict() for s in self.shards]}, fh, indent=2)
             fh.write("\n")
 
     @classmethod
-    def split(cls, n_files: int, shards: Sequence[dict]) -> ShardMap:
+    def split(cls, n_files: int, shards: Sequence[dict],
+              layout: KeyLayout = DEFAULT_LAYOUT) -> ShardMap:
         """Spread file ids ``0..n_files-1`` evenly over the given shard specs
         (dicts of :class:`Shard` fields without ``file_ids``). The last shard
         is left open-ended so files appended to the manifest still have a home.
@@ -148,9 +162,10 @@ class ShardMap:
         n = len(shards)
         if n == 0 or n_files < n:
             raise ValueError("need at least one file per shard")
-        bounds = [round(i * n_files / n) for i in range(n)] + [MAX_FILE_ID + 1]
+        bounds = ([round(i * n_files / n) for i in range(n)]
+                  + [layout.max_file_id + 1])
         return cls([Shard(**spec, file_ids=(bounds[i], bounds[i + 1]))
-                    for i, spec in enumerate(shards)])
+                    for i, spec in enumerate(shards)], layout=layout)
 
 
 # --------------------------------------------------------------------------
@@ -347,13 +362,19 @@ def ingest_manifest(manifest: Manifest, smap: ShardMap, ds, *,
     :data:`.upload.METHODS` can be forced for all shards. ``use_copy_into=False``
     is kept for compatibility and means ``method="insert"``.
     """
+    if manifest.layout != smap.layout:
+        raise ValueError(
+            f"key layouts differ: manifest uses {manifest.layout.entry_bits} "
+            f"entry bits, shard map uses {smap.layout.entry_bits}; convert one "
+            "explicitly (Manifest.with_layout, keys.migrate_tables)")
     check_files(manifest, ds, tree=tree)
     by_shard: dict[str, list] = {s.name: [] for s in smap}
     for f in manifest.files:
         by_shard[smap.shard_for(f.file_id).name].append((f.path, f.file_id))
     if use_copy_into is False:
         method = "insert"
-    task = _IngestTask(by_shard, ds, step_size, tree, method, create_schema)
+    task = _IngestTask(by_shard, ds, step_size, tree, method, create_schema,
+                       manifest.layout)
     counts = scatter(smap, task, executor=executor, max_workers=max_workers)
     return {s.name: n for s, n in zip(smap, counts, strict=True)}
 
@@ -391,6 +412,7 @@ class _IngestTask:
     tree: str | None
     method: str
     create_schema: bool
+    layout: KeyLayout = DEFAULT_LAYOUT
 
     def _method(self, shard: Shard) -> str:
         from .upload import LOCAL_HOSTS, METHODS
@@ -414,14 +436,15 @@ class _IngestTask:
         for path, file_id in self.by_shard[shard.name]:
             total += ingest_root_chunked(
                 path, self.ds, conn, tree=self.tree, step_size=self.step_size,
-                file_id=file_id, replace=True, method=self._method(shard))
+                file_id=file_id, replace=True, method=self._method(shard),
+                layout=self.layout)
         conn.commit()
         return total
 
 
-def _verify_task(tables):
+def _verify_task(tables, layout: KeyLayout = DEFAULT_LAYOUT):
     def task(shard: Shard, conn) -> dict:
-        lo, hi = shard.event_id_range
+        lo, hi = shard.key_range(layout)
         cur = conn.cursor()
         report = {"shard": shard.name, "problems": []}
         for t in tables:
@@ -450,6 +473,6 @@ def verify(smap: ShardMap, tables: Sequence[str] = ("events", "jets", "muons"),
     # thread executor: the closure is not picklable; embedded shards are
     # checked one at a time in this process instead.
     if smap.embedded:
-        task = _verify_task(tuple(tables))
+        task = _verify_task(tuple(tables), smap.layout)
         return [_run_on_shard(s, task) for s in smap]
-    return scatter(smap, _verify_task(tuple(tables)), executor="thread")
+    return scatter(smap, _verify_task(tuple(tables), smap.layout), executor="thread")
