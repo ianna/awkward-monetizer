@@ -14,10 +14,11 @@ def main() -> None:
     p.add_argument("--out", default="data/nano_synth.root")
     p.add_argument("--events", type=int, default=2000)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--format", choices=("rntuple", "ttree"), default="rntuple")
     args = p.parse_args()
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    write_nanoaod(args.out, args.events, args.seed)
-    print(f"wrote {args.out}: {args.events} events, tree 'Events'")
+    write_nanoaod(args.out, args.events, args.seed, fmt=args.format)
+    print(f"wrote {args.out}: {args.events} events, {args.format} 'Events'")
 
 
 if __name__ == "__main__":

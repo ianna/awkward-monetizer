@@ -26,7 +26,16 @@ embedded engine and a live Homebrew server. See **Performance findings** below.
 
 ### 🚧 Data Model
 - ✅ Define MonetDB schema (`events`, `jets`, `muons`, `tracks`) — see `schema.sql`
-- ⬜ Validate schema against CMS/ATLAS ROOT files
+- ✅ Pushdown-ready event columns: stored multiplicities (`n_jets`, `n_muons`) so
+  object-count cuts are plain `events` predicates (no `GROUP BY` over objects),
+  and optional trigger flags (`hlt_isomu24`, `hlt_isomu27`, `hlt_mu17_mu8_dz`)
+  that load as NULL when a file's menu lacks the path — one schema across menus.
+  NULL flags force the (small) `events` table onto CSV upload: MonetDB's binary
+  COPY has no NULL byte for BOOLEAN; `jets`/`muons` stay binary.
+- ✅ RNTuple input: `open_tree` auto-detects `ROOT::RNTuple` as well as `TTree`;
+  `make-nano --format {rntuple,ttree}`, and both formats ingest to identical tables
+- ⬜ Validate schema against CMS/ATLAS ROOT files (incl. CMS-produced RNTuple
+  NanoAOD field naming, which may differ from uproot's flat `Muon_pt` layout)
 - ⬜ Document NF2 → flat mapping
 
 ### ✅ Ingestion Pipeline

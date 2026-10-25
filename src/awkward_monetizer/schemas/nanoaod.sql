@@ -9,7 +9,13 @@ CREATE TABLE events (
     event_number BIGINT,               -- NanoAOD `event` (not unique on its own)
     met_pt       DOUBLE,
     met_phi      DOUBLE,
-    n_jets       INT
+    -- trigger flags: NULL when the file's menu doesn't contain the path
+    hlt_isomu24     BOOLEAN,           -- HLT_IsoMu24
+    hlt_isomu27     BOOLEAN,           -- HLT_IsoMu27
+    hlt_mu17_mu8_dz BOOLEAN,           -- HLT_Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ
+    -- stored multiplicities, so object-count cuts never need GROUP BY
+    n_jets       INT,
+    n_muons      INT
 );
 
 CREATE TABLE jets (

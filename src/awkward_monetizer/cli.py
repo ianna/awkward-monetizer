@@ -264,8 +264,9 @@ def _cmd_make_nano(args) -> None:
 
     from .sampledata import write_nanoaod
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    write_nanoaod(args.out, args.events, args.seed)
-    print(f"wrote {args.out}: {args.events} events, tree 'Events'")
+    write_nanoaod(args.out, args.events, args.seed, fmt=args.format,
+                  triggers=not args.no_triggers)
+    print(f"wrote {args.out}: {args.events} events, {args.format} 'Events'")
 
 
 def _cmd_bench(args) -> None:
@@ -499,6 +500,10 @@ def build_parser() -> argparse.ArgumentParser:
     mn.add_argument("--out", default=DEFAULT_NANO)
     mn.add_argument("--events", type=int, default=2000)
     mn.add_argument("--seed", type=int, default=0)
+    mn.add_argument("--format", choices=("rntuple", "ttree"), default="rntuple",
+                    help="RNTuple (uproot's default) or classic NanoAOD TTree")
+    mn.add_argument("--no-triggers", action="store_true",
+                    help="omit the HLT_* branches (their columns load as NULL)")
     mn.set_defaults(func=_cmd_make_nano)
 
     bn = sub.add_parser("bench", help="benchmark backends (awkward/hybrid/rdataframe)")

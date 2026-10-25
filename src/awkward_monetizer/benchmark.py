@@ -34,7 +34,7 @@ import numpy as np
 import uproot
 
 from .datasets import DATASETS
-from .ingest import build_tables, load_tables, read_root
+from .ingest import build_tables, find_tree_name, load_tables, read_root
 from .physics import invariant_mass, muons_p4, opposite_charge_pair
 from .reconstruct import fetch_dimuon_events, reconstruct_events
 from .timing import stage_time
@@ -64,12 +64,7 @@ def scale_root(root_file: str, scale: int, out: str,
     """Write ``out`` = the input tiled ``scale`` times (same tree/branches)."""
     ds = DATASETS[dataset]
     with uproot.open(root_file) as f:
-        tname = ds.tree
-        if tname is None:
-            for name, cls in f.classnames().items():
-                if cls == "TTree":
-                    tname = name.split(";")[0]
-                    break
+        tname = ds.tree if ds.tree is not None else find_tree_name(f)
         # flat (dimuon) branches: numpy dict tiles cleanly
         arrays = f[tname].arrays(library="np")
     tiled = {k: np.tile(v, scale) for k, v in arrays.items()}

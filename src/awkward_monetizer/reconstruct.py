@@ -27,8 +27,19 @@ def _column_to_ak(series: pd.Series) -> ak.Array:
     build, ``np.asarray`` on a string branch may yield an object array OR a
     fixed-width unicode ('<U') array. Awkward rejects both via from_numpy, so
     only genuinely numeric columns take the numpy path.
+
+    Nullable extension columns (e.g. pandas ``boolean`` for an optional trigger
+    flag that a file doesn't have) become an option-type Awkward array, with
+    NA -> None.
     """
-    if pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series):
+    is_numeric = (pd.api.types.is_numeric_dtype(series)
+                  or pd.api.types.is_bool_dtype(series))
+    if is_numeric and pd.api.types.is_extension_array_dtype(series):
+        valid = series.notna().to_numpy()
+        values = series.to_numpy(dtype=series.dtype.numpy_dtype, na_value=0)
+        arr = ak.Array(values)
+        return arr if valid.all() else ak.mask(arr, valid)
+    if is_numeric:
         return ak.Array(series.to_numpy())
     return ak.Array(series.astype(object).tolist())
 
