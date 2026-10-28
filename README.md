@@ -72,7 +72,3 @@ SQL and combinatorics in Awkward. See
 A finished prototype in maintenance mode: bug fixes and releases continue, no
 new features are planned. Arrow transport, electrons and b-tag are open for
 anyone who wants to take them on.
-
-## License
-
-BSD-3-Clause.
