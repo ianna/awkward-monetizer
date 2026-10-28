@@ -98,7 +98,8 @@ def compare(got: np.ndarray | None, ref: np.ndarray, *, rtol=1e-6,
         return False, f"n={got.size}, expected {ref.size}"
     a, b = np.sort(got), np.sort(ref)
     if np.allclose(a, b, rtol=rtol, atol=atol, equal_nan=True):
-        return True, f"n={ref.size} match"
+        return True, (f"all {ref.size} values match the reference "
+                      f"(order ignored, within rtol={rtol:g})")
     bad = got.size - _n_matched(a, b, rtol, atol)
     return False, (f"{bad}/{ref.size} submitted values have no match in the "
                    "reference (multiset comparison, order ignored)")
