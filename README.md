@@ -337,6 +337,21 @@ monetdb create hep_test && monetdb release hep_test
 AWKWARD_MONETIZER_TEST_DB=localhost/hep_test pytest tests/test_upload.py
 ```
 
+## Agentic analysis
+
+An LLM agent (Claude) answers analysis questions with four tools: schema
+discovery, read-only SQL on MonetDB, Awkward code on events selected in SQL,
+and submit. It routes flat selections to SQL and combinatorics to Awkward, and
+is scored against ADL Q1–Q8 ground truth. The same tools are exposed over MCP.
+
+```bash
+pixi run agent-baseline        # scripted expert, no LLM (expect 8/8)
+pixi run agent-eval            # Claude on Q1-Q8 (needs ANTHROPIC_API_KEY)
+awkward-monetizer agent ask --database hep_agent "MET of events with two jets above 40 GeV"
+```
+
+See [docs/agent.md](docs/agent.md).
+
 ## Marimo notebooks
 
 From a repository checkout with notebook dependencies installed:
