@@ -397,7 +397,8 @@ def _cmd_agent(args) -> None:
     if args.agent_cmd == "mcp":
         from .agent.mcp_server import serve
         serve(_agent_conn(args, quiet=True), plot_dir=args.plot_dir,
-              check_log=args.check_log or None)
+              check_log=args.check_log or None,
+              chunk_events=args.chunk_events, ref_cache=args.ref_cache)
         return
 
     conn = _agent_conn(args)
@@ -457,7 +458,9 @@ def _agent_ask(args, conn) -> None:
     if not question:
         raise SystemExit("give a question (or --replay a transcript)")
     print(f"question: {question}\n")
-    run = run_agent(question, AnalysisTools(conn, plot_dir=args.plot_dir), client,
+    run = run_agent(question, AnalysisTools(conn, plot_dir=args.plot_dir,
+                                             chunk_events=args.chunk_events),
+                    client,
                     max_turns=args.max_turns, echo=print)
     print(f"\nstopped: {run.stopped} after {run.turns} turns, {run.wall_s}s, "
           f"{run.usage['input_tokens'] + run.usage['output_tokens']} tokens")
@@ -494,7 +497,8 @@ def _agent_eval(args, conn) -> None:
         raise SystemExit(f"unknown queries {unknown}; choose from {list(TASKS)}")
     rows = evaluate(conn, lambda q: _agent_client(args, q), queries=queries,
                     max_turns=args.max_turns, echo=print,
-                    transcripts_dir=args.transcripts)
+                    transcripts_dir=args.transcripts,
+                    chunk_events=args.chunk_events, ref_cache=args.ref_cache)
     print("\n" + format_table(rows))
 
 
@@ -686,6 +690,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with --from-root: monetdbe or sqlite (default: "
                              "monetdbe if installed)")
         _add_server_args(sp)
+        from .agent.tools import CHUNK_EVENTS
+        sp.add_argument("--chunk-events", type=int, default=CHUNK_EVENTS,
+                        help="above this many events, Awkward work and the ADL "
+                             "reference run in event_id chunks of this size")
+        sp.add_argument("--ref-cache", default=None, metavar="NPZ",
+                        help="cache the ADL reference answers in this file "
+                             "(worth it for large databases)")
         if model:
             from .agent.loop import DEFAULT_MODEL
             sp.add_argument("--model", default=DEFAULT_MODEL)

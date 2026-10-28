@@ -336,3 +336,178 @@ def test_mcp_server_lists_all_tools(sqlite_conn):
                      "plot_result", "check_answer"}
     # the routing rule reaches MCP clients as server instructions
     assert "combinatorics" in server.instructions and "check_answer" in server.instructions
+
+
+# --------------------------------------------------------------------------
+# Large databases: chunked by event_id range
+# --------------------------------------------------------------------------
+def test_event_ranges_cover_every_event_once(conn):
+    from awkward_monetizer.agent.tools import event_ranges
+    assert event_ranges(conn, 10**9) is None          # small: one pass
+    ranges = event_ranges(conn, 200)
+    cur = conn.cursor()
+    total = 0
+    for lo, hi in ranges:
+        cur.execute(f"SELECT COUNT(*) FROM events WHERE event_id >= {lo} "
+                    f"AND event_id < {hi}")
+        total += cur.fetchall()[0][0]
+    cur.execute("SELECT COUNT(*) FROM events")
+    assert total == cur.fetchall()[0][0]
+    assert len(ranges) > 1
+
+
+def test_chunked_reference_and_scripted_expert_match_single_pass(conn):
+    full = reference_answers(conn)
+    chunked = reference_answers(conn, chunk_events=200)
+    for q in TASKS:
+        assert compare(chunked[q], full[q])[0], q
+    rows = evaluate(conn, lambda q: ScriptedClient(expert_script(q)),
+                    chunk_events=200)
+    assert all(r.passed for r in rows), format_table(rows)
+
+
+def test_chunked_awkward_eval_projects_and_falls_back(conn):
+    big = AnalysisTools(conn)
+    small = AnalysisTools(conn, chunk_events=200)
+    code = "result = events.met_pt"
+    a = json.loads(big.call("awkward_eval", {"code": code})[0])
+    b = json.loads(small.call("awkward_eval", {"code": code})[0])
+    assert b["chunks"] > 1 and b["events_fetched"] == a["events_fetched"]
+    np.testing.assert_array_equal(small.results[b["result_id"]],
+                                  big.results[a["result_id"]])
+    assert set(small._projection(check_code(code))) == {"events"}  # no objects
+    # subscripting by string still projects the right column
+    c = json.loads(small.call("awkward_eval",
+                              {"code": 'result = ak.num(events["jets"], axis=1)',
+                               "where": "n_jets >= 1"})[0])
+    assert c["summary"]["min/q25/median/q75/max"][0] >= 1
+    # a column the projection cannot see is fetched by the unprojected retry
+    d = small.call("awkward_eval", {"code": "f = ak.fields(events)\n"
+                                    "result = events[f[f.index('met_pt')]]"})
+    assert not d[1], d[0]
+
+
+def test_reference_cache_roundtrip(sqlite_conn, tmp_path, monkeypatch):
+    import sys
+    ev = sys.modules["awkward_monetizer.agent.evaluate"]
+    path = str(tmp_path / "refs.npz")
+    first = reference_answers(sqlite_conn, cache=path)
+    monkeypatch.setattr(ev, "fetch_tables", lambda *a, **k: 1 / 0)  # must not run
+    again = reference_answers(sqlite_conn, ["Q2", "Q6"], cache=path)
+    np.testing.assert_array_equal(again["Q6"], first["Q6"])
+
+
+def test_projection_covers_p4_helpers(conn):
+    t = AnalysisTools(conn, chunk_events=200)
+    proj = t._projection(check_code("result = ak.num(muons_p4(events), axis=1)"))
+    assert {"pt", "eta", "phi", "mass", "charge"} <= set(proj["muons"])
+    assert "jets" not in proj
+    # every scripted Awkward answer runs on its projection, without the retry
+    from awkward_monetizer.agent.scripted import _AWK
+    for where, code in _AWK.values():
+        tree = check_code(code)
+        p = t._projection(tree)
+        for rng in t.ranges()[:2]:
+            t._run_code(tree, t._chunk(rng, where, p))
+
+
+@pytest.mark.parametrize("where", [None, "n_jets >= 3"])
+def test_fetch_events_matches_pandas_path(conn, where):
+    import awkward as ak
+
+    from awkward_monetizer.agent.tools import event_ranges
+    from awkward_monetizer.reconstruct import (
+        fetch_events,
+        fetch_tables,
+        reconstruct_multi,
+    )
+    for rng in [None, *event_ranges(conn, 400)[:2]]:
+        ev_df, jets = fetch_tables(conn, where=where, collection="jets",
+                                   event_range=rng)
+        _, muons = fetch_tables(conn, where=where, collection="muons",
+                                event_range=rng)
+        old = reconstruct_multi(ev_df, {"jets": jets, "muons": muons})
+        new = fetch_events(conn, where, event_range=rng,
+                           collections={"jets": None, "muons": None})
+        # same values; MonetDB BOOLEAN trigger flags now arrive as bool
+        # (pandas made them int64), every other field keeps its type
+        assert ak.to_list(new) == ak.to_list(old)
+        for f in ak.fields(old):
+            if not f.startswith("hlt_"):
+                assert str(new[f].type) == str(old[f].type), f
+    # projected: only the named columns, same values
+    proj = fetch_events(conn, where, event_columns=("event_id", "met_pt"),
+                        collections={"jets": ("event_id", "jet_index", "pt")})
+    assert ak.fields(proj) == ["event_id", "met_pt", "jets"]
+    assert ak.array_equal(proj.jets.pt, old.jets.pt if rng is None else
+                          fetch_events(conn, where,
+                                       collections={"jets": None}).jets.pt)
+
+
+def test_fetch_columns_handles_nulls_and_unknown_types():
+    import awkward as ak
+
+    from awkward_monetizer.reconstruct import _column
+    a = _column((1.5, None, 2.0), np.dtype(np.float64))
+    assert ak.to_list(a) == [1.5, None, 2.0]
+    assert _column((1, 2, 3), None).dtype == np.int64
+    assert ak.to_list(_column((True, None), None)) == [True, None]
+    assert ak.to_list(_column((None, None), np.dtype(np.bool_))) == [None, None]
+    assert ak.to_list(_column((None, None), None)) == [None, None]
+    assert ak.to_list(_column(("a", "b"), None)) == ["a", "b"]
+
+
+def test_binary_fast_path_decodes_monetdb_export(monkeypatch):
+    """The pymonetdb fast path, against a fake server speaking the
+    Xexportbin layout (payloads, then (start, length) pairs, then the offset)."""
+    import awkward as ak
+
+    from awkward_monetizer import reconstruct as rc
+    data = {
+        "event_id": np.array([5, 6, 7, 8, 9], "<i8"),
+        "n": np.array([1, -2**31, 3, 4, 5], "<i4"),          # one NULL
+        "pt": np.array([1.5, 2.5, np.nan, 4.5, 5.5], "<f8"),  # NaN = NULL
+        "flag": np.array([1, 0, -128, 1, 0], "i1"),           # one NULL
+    }
+    types = ["bigint", "int", "double", "boolean"]
+
+    def export(start, n):
+        payload, toc = b"", []
+        for col in data.values():
+            raw = col[start:start + n].tobytes()
+            toc.append((len(payload), len(raw)))
+            payload += raw
+        table = np.array(toc, "<i8").tobytes()
+        return memoryview(payload + table + np.array([len(payload)], "<i8").tobytes())
+
+    class Conn:
+        mapi = SimpleNamespace(server_endian="little")
+        _policy = SimpleNamespace(use_binary=lambda: True)
+
+        def binary_command(self, cmd):
+            _, _, start, n = cmd.split()
+            return export(int(start), int(n))
+
+    class Cur:
+        connection = Conn()
+
+        def execute(self, sql):
+            self._query_id = "7"
+            self.rowcount = 5
+            self._rows = [(5, 1, 1.5, True)]        # first reply, text protocol
+            self.description = [(k, t) for k, t in zip(data, types, strict=True)]
+
+        def fetchall(self):
+            raise AssertionError("the fast path must not fall back")
+
+    monkeypatch.setattr(rc, "BINARY_BATCH", 2)       # several export batches
+    cols = rc._fetch_columns(Cur(), "SELECT ...", None)
+    assert cols["event_id"].dtype == np.int64
+    assert cols["event_id"].tolist() == [5, 6, 7, 8, 9]
+    assert ak.to_list(cols["n"]) == [1, None, 3, 4, 5]
+    assert ak.to_list(cols["pt"]) == [1.5, 2.5, None, 4.5, 5.5]
+    assert ak.to_list(cols["flag"]) == [True, False, None, True, False]
+    # an unsupported type (varchar) falls back to the portable path
+    types[1] = "varchar"
+    with pytest.raises(AssertionError, match="must not fall back"):
+        rc._fetch_columns(Cur(), "SELECT ...", None)
