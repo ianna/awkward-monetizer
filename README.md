@@ -47,15 +47,21 @@ src/awkward_monetizer/
   reconstruct.py  flat tables → Awkward NF2 (ak.unflatten)
   db.py           MonetDB connections (server / embedded) + packaged schema
   physics.py      4-vectors (scikit-hep vector), invariant mass, charge pairs
+  keys.py         collision-free event_id layout and file manifests
+  shards.py       range-partitioned shards, scatter-gather queries
+  upload.py       remote bulk load (COPY ... ON CLIENT, binary and CSV)
   adl.py          ADL Q1–Q8 benchmark queries
   benchmark.py    dimuon and trijet backend timing/comparison
   roundtrip.py    full ingest → DB → slice → reconstruct → validate cycle
+  ml.py           NF2 events → padded PyTorch tensors (DeepSets example)
   sampledata.py   synthetic NanoAOD generator
+  agent/          LLM agent: tools, loop, ADL evaluation, MCP server
   cli.py          `awkward-monetizer` command-line interface
-  schemas/        packaged SQL (dimuon.sql, nanoaod.sql, jets.sql)
-examples/         analysis.py (Marimo notebook), make_sample_nanoaod.py
-marimo/           ADL dashboard and individual Q4/Q6/Q7/Q8 notebooks
-tests/            pytest suite (reconstruction, round-trip, ADL)
+  schemas/        packaged SQL (dimuon, nanoaod, jets) and SQL UDFs
+examples/         analysis.py (Marimo), benchmarks, energy and memory scripts
+marimo/           ADL dashboard, Q4/Q6/Q7/Q8 notebooks, ML training
+docs/             agent.md, roadmap.md, logo/
+tests/            pytest suite (reconstruction, round-trip, ADL, shards, agent)
 data/             inputs (git-ignored) — see data/README.md
 .github/workflows/ CI and PyPI Trusted Publishing
 ```
@@ -68,6 +74,8 @@ Requires Python 3.10 or newer. For a published release:
 python -m pip install awkward-monetizer
 # Include plotting and notebook dependencies:
 python -m pip install "awkward-monetizer[notebook]"
+# The LLM agent and its MCP server:
+python -m pip install "awkward-monetizer[agent]"
 ```
 
 For development and the repository's notebooks, clone this repository first.
@@ -162,8 +170,10 @@ validation reports that it did not run and returns `passed=False`.
 pT, Q4 ≥2 jets, Q5 OS dimuon, Q6 trijet, Q7 lepton-cleaned HT, Q8 MT of MET +
 lead lepton) on reconstructed NanoAOD events using `vector`. No real NanoAOD file
 ships here — `make-nano` writes a synthetic one; point `--from-root` at a real
-CMS Open Data NanoAOD file to run on data. Scope: only muons are present, so
-Q7/Q8 use muons as leptons; Q6 omits the b-tag term (no b-tag branch yet).
+CMS Open Data NanoAOD file to run on data. Scope: only muons are mapped, so
+Q7/Q8 use muons as leptons; Q6 omits the b-tag term (the `nanoaod` schema does
+not map a b-tag branch yet). Q7 follows the canonical IRIS-HEP definition, with
+no |η| cut on the jets.
 
 ## Awkward from source
 
@@ -231,7 +241,17 @@ The harness ships two analyses (`--analysis`) with different workloads:
   a 3-way self-join over jet triples, and a window function.
 
 Relative performance depends on input size, multiplicities, backend, and
-hardware; run the comparison on your data.
+hardware; run the comparison on your data. One example (MacBook Pro, Homebrew
+MonetDB server, median of 5, all backends agreeing on the result):
+
+| Analysis | Events | Awkward (in memory) | hybrid (SQL cut → Awkward) | all in SQL |
+|---|---|---|---|---|
+| `zmumu`, `cms.root` ×20 | 46,080 | 2.1 ms | 35 ms | 6.9 ms |
+| `trijet` (ADL Q6), synthetic | 15,000 | 24 ms | — | 56 ms |
+
+Once data lives in the database, a flat selection is cheapest in SQL (moving
+rows out costs more than the cut), while combinatorics are cheaper in Awkward.
+On very small inputs (800 events) SQL was still ahead for the trijet.
 
 ```bash
 awkward-monetizer bench --analysis trijet --root-file data/nano_synth.root \
@@ -346,18 +366,45 @@ AWKWARD_MONETIZER_TEST_DB=localhost/hep_test pytest tests/test_upload.py
 
 ## Agentic analysis
 
-An LLM agent (Claude) answers analysis questions with four tools: schema
-discovery, read-only SQL on MonetDB, Awkward code on events selected in SQL,
-and submit. It routes flat selections to SQL and combinatorics to Awkward, and
-is scored against ADL Q1–Q8 ground truth. The same tools are exposed over MCP.
+`awkward_monetizer.agent` lets an LLM answer HEP analysis questions with a small
+set of tools:
+
+| Tool | Runs on | Used for |
+|---|---|---|
+| `describe_schema` | MonetDB catalog | tables, columns, types, row counts, units |
+| `run_sql` | MonetDB | read-only SELECT: cuts, counts, aggregates |
+| `awkward_eval` | SQL → Awkward | event cut in MonetDB, agent-written Awkward code on the rebuilt events |
+| `submit_answer` | either | final values, from a stored result or a SQL query |
+| `plot_result` | matplotlib | histogram PNG of a result |
+| `check_answer` | ADL reference | MCP only: score against ADL Q1–Q8, every attempt logged |
+
+The routing rule (cuts in SQL, combinatorics in Awkward) is part of the agent's
+system prompt and, over MCP, of the server instructions. Answers to the ADL
+questions are checked value by value against `adl.py`.
+
+Drive the tools from any MCP client, for example Claude Code:
 
 ```bash
-pixi run agent-baseline        # scripted expert, no LLM (expect 8/8)
-pixi run agent-eval            # Claude on Q1-Q8 (needs ANTHROPIC_API_KEY)
+claude mcp add -s user awkward-monetizer -- awkward-monetizer agent mcp --database hep_real
+awkward-monetizer agent questions        # the eight ADL task texts
+awkward-monetizer agent checks           # first-check vs final results of a session
+```
+
+Or run the built-in loop through the Anthropic API (needs `ANTHROPIC_API_KEY`):
+
+```bash
+awkward-monetizer agent eval --database hep_agent --scripted   # no model; expect 8/8
+awkward-monetizer agent eval --database hep_agent              # Claude on Q1–Q8
 awkward-monetizer agent ask --database hep_agent "MET of events with two jets above 40 GeV"
 ```
 
-See [docs/agent.md](docs/agent.md).
+On the first 100,000 events of a CMS Open Data DoubleMuon Run2016H NanoAODv9
+file (record 30555), Claude Sonnet 5.5 in Claude Code answered all eight ADL
+questions correctly on the first attempt. With the routing rule it did Q1–Q5 in
+SQL and Q6–Q8 in Awkward; without it, it wrote everything as SQL, still
+correctly. Agent-written Python runs in-process behind an AST guard, which is
+not a security sandbox: use it on your own machine and data. See
+[docs/agent.md](https://github.com/ianna/awkward-monetizer/blob/main/docs/agent.md).
 
 ## Marimo notebooks
 
@@ -408,10 +455,16 @@ for release setup.
 ## Status
 
 Ingestion, reconstruction, the live MonetDB round-trip, and ADL Q1–Q8 are
-implemented, along with chunked NanoAOD ingestion, backend benchmarks, Marimo
-notebooks, and a PyPI release workflow. Arrow transport, electron collections,
-and the Q6 b-tag quantity remain future work. The ROOT/RDataFrame backend is
+implemented, along with chunked and parallel NanoAOD ingestion, sharding with
+scatter-gather queries, remote bulk loading, backend benchmarks, energy and
+memory measurements, PyTorch export, the LLM agent with its MCP server, Marimo
+notebooks, and a PyPI release workflow. The ROOT/RDataFrame backend is
 implemented but requires a separately installed ROOT environment.
+
+The project is a finished prototype in maintenance mode: bug fixes and releases
+continue, but no new features are planned. Arrow transport, electron
+collections and the Q6 b-tag quantity are open for anyone who wants to take
+them on.
 
 ## License
 
