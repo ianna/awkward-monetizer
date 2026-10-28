@@ -10,13 +10,12 @@ Hybrid analysis of nested (ragged) HEP data: flatten ROOT events into
 rebuild the nesting in [Awkward Array](https://awkward-array.org/) for the
 physics. An LLM agent can drive the same pipeline through MCP.
 
-```
-ROOT ──uproot──▶ Awkward ──flatten──▶ MonetDB
-                                         │
-   Awkward (NF2) ◀──unflatten── SQL slice┘
-        │
-        └─▶ physics: invariant mass, ΔR, combinatorics ─▶ plots
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ianna/awkward-monetizer/main/docs/images/pipeline-dark.svg">
+    <img alt="Pipeline: ROOT file → uproot → Awkward → flatten → MonetDB → SQL slice and unflatten → Awkward (NF2) → physics; an LLM agent over MCP drives the SQL and Awkward steps" src="https://raw.githubusercontent.com/ianna/awkward-monetizer/main/docs/images/pipeline.svg" width="900">
+  </picture>
+</p>
 
 ## Install
 
