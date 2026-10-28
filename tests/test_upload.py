@@ -49,6 +49,36 @@ def _schema_types(name):
     return out
 
 
+def _decode_binary(raw, sqltype):
+    arr = np.frombuffer(raw, dtype=_SQL_TO_NP[sqltype])
+    if sqltype == "boolean":
+        # like MonetDB: only 0/1 are valid BOOLEAN bytes (no NULL encoding)
+        assert set(np.unique(arr).tolist()) <= {0, 1}, "invalid boolean byte"
+        return arr.astype(bool)
+    return arr
+
+
+def _csv_dtype(sqltype):
+    # nullable for BOOLEAN: '' (NULL AS '') -> NA, True/False -> bool
+    return "boolean" if sqltype == "boolean" else _SQL_TO_NP[sqltype]
+
+
+def _assert_column(got, want, col, **tol):
+    """Same NULL positions, and equal (or allclose with ``tol``) values elsewhere."""
+    g, w = got[col], want[col]
+    np.testing.assert_array_equal(g.isna().to_numpy(), w.isna().to_numpy(),
+                                  err_msg=f"{col}: NULL mask")
+    ok = w.notna().to_numpy()
+    gv = g[ok].to_numpy(dtype=g.dtype.numpy_dtype
+                        if pd.api.types.is_extension_array_dtype(g) else None)
+    wv = w[ok].to_numpy(dtype=w.dtype.numpy_dtype
+                        if pd.api.types.is_extension_array_dtype(w) else None)
+    if tol:
+        np.testing.assert_allclose(gv, wv, err_msg=col, **tol)
+    else:
+        np.testing.assert_array_equal(gv, wv.astype(gv.dtype), err_msg=col)
+
+
 class _Upload:
     def __init__(self):
         self.raw = io.BytesIO()
@@ -134,7 +164,7 @@ class _Cursor:
             table, files = m[1], re.findall(r"'([^']+)'", m[2])
             cols = s.types[table]
             assert len(files) == len(cols), "one file per column, in table order"
-            data = {c: np.frombuffer(s._upload(f, False), dtype=_SQL_TO_NP[t])
+            data = {c: _decode_binary(s._upload(f, False), t)
                     for (c, t), f in zip(cols, files, strict=True)}
             assert len({len(v) for v in data.values()}) == 1, "ragged columns"
             s.tables[table].append(pd.DataFrame(data))
@@ -145,7 +175,7 @@ class _Cursor:
             cols = s.types[table]
             df = pd.read_csv(io.BytesIO(s._upload(name, True)), header=None,
                              names=[c for c, _ in cols],
-                             dtype={c: _SQL_TO_NP[t] for c, t in cols})
+                             dtype={c: _csv_dtype(t) for c, t in cols})
             assert len(df) == n
             s.tables[table].append(df)
         elif m := re.fullmatch(r"DELETE FROM (\w+)(.*)", sql):
@@ -176,13 +206,30 @@ def test_binary_upload_is_bit_exact(tables):
     for name, src in tables.items():
         got = srv.frame(name)
         assert list(got.columns) == list(src.columns)
+        # float32 kinematics widen to DOUBLE exactly; ints keep their values.
+        # events falls back to CSV (NULL flag, see below), where the fake
+        # server's read_csv float parsing is only good to ~1 ulp
+        tol = {"rtol": 1e-14} if name == "events" else {}
         for c in src.columns:
-            want = src[c].to_numpy()
-            # float32 kinematics widen to DOUBLE exactly; ints keep their values
-            np.testing.assert_array_equal(got[c].to_numpy(),
-                                          want.astype(got[c].dtype), err_msg=c)
+            _assert_column(got, src, c, **tol)
     fids, _ = split_event_ids(srv.frame("events")["event_id"])
     assert set(fids.tolist()) == {3}
+    # the sample lacks one trigger path -> NULL flag -> events can't go binary,
+    # but the (much larger) collection tables still do
+    assert any(q.startswith("COPY 600 RECORDS INTO events") for q in srv.statements)
+    assert any(q.startswith("COPY LITTLE ENDIAN BINARY INTO jets")
+               for q in srv.statements)
+
+
+def test_binary_upload_events_when_every_flag_present(tables):
+    ev = tables["events"].copy()
+    for col in NANO.flags:
+        ev[col] = np.zeros(len(ev), dtype=bool)
+    srv = FakeServer()
+    load_tables(srv, {"events": ev}, method="binary")
+    assert srv.statements[-1].startswith("COPY LITTLE ENDIAN BINARY INTO events")
+    for c in ev.columns:
+        _assert_column(srv.frame("events"), ev, c)
 
 
 def test_client_csv_upload_roundtrip(tables):
@@ -193,8 +240,7 @@ def test_client_csv_upload_roundtrip(tables):
         got = srv.frame(name)
         assert len(got) == len(src)
         for c in src.columns:
-            np.testing.assert_allclose(got[c].to_numpy(), src[c].to_numpy(),
-                                       rtol=1e-6, err_msg=c)
+            _assert_column(got, src, c, rtol=1e-6)
 
 
 def test_binary_and_csv_agree_through_chunked_ingest(nano_file):
@@ -208,8 +254,8 @@ def test_binary_and_csv_agree_through_chunked_ingest(nano_file):
     for t in ("events", "jets", "muons"):
         a, b = got["binary"].frame(t), got["client"].frame(t)
         assert a["event_id"].tolist() == b["event_id"].tolist()
-        np.testing.assert_allclose(a.iloc[:, 1:].to_numpy(float),
-                                   b.iloc[:, 1:].to_numpy(float), rtol=1e-6)
+        for c in a.columns[1:]:
+            _assert_column(a, b, c, rtol=1e-6)
 
 
 def test_binary_falls_back_to_csv_when_not_numeric():

@@ -1,6 +1,7 @@
 """Unified command-line interface: ``awkward-monetizer <subcommand>``.
 
-Subcommands: ingest, manifest, shards, reconstruct, roundtrip, adl, make-nano, bench.
+Subcommands: ingest, manifest, shards, reconstruct, roundtrip, adl, make-nano, bench,
+agent.
 """
 
 from __future__ import annotations
@@ -264,8 +265,9 @@ def _cmd_make_nano(args) -> None:
 
     from .sampledata import write_nanoaod
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
-    write_nanoaod(args.out, args.events, args.seed)
-    print(f"wrote {args.out}: {args.events} events, tree 'Events'")
+    write_nanoaod(args.out, args.events, args.seed, fmt=args.format,
+                  triggers=not args.no_triggers)
+    print(f"wrote {args.out}: {args.events} events, {args.format} 'Events'")
 
 
 def _cmd_bench(args) -> None:
@@ -352,6 +354,149 @@ def _cmd_manifest(args) -> None:
         n = "" if f.n_entries is None else f"  {f.n_entries} entries"
         print(f"  {f.file_id:>6d}  [{lo}, {hi})  {f.path}{n}")
     m.to_json(args.out)
+
+# --------------------------------------------------------------------------
+# agent: LLM-driven analysis over SQL + Awkward tools
+# --------------------------------------------------------------------------
+def _agent_conn(args, quiet: bool = False):
+    import contextlib
+    import sys
+    if args.from_root:
+        from .agent import load_demo_db
+        backend = "auto" if args.backend == "server" else args.backend
+        out = sys.stderr if quiet else sys.stdout
+        with contextlib.redirect_stdout(out):
+            print(f"loading {args.from_root} into a throwaway {backend} database ...")
+            return load_demo_db(args.from_root, backend=backend)
+    from . import db
+    return db.open_server(database=args.database, host=args.host, port=args.port,
+                          user=args.user, password=args.password)
+
+
+def _agent_client(args, query: str | None = None):
+    import pathlib
+
+    from .agent import AnthropicClient, ReplayClient, ScriptedClient, expert_script
+    if getattr(args, "scripted", False):
+        return ScriptedClient(expert_script(query))
+    if args.replay:
+        p = pathlib.Path(args.replay)
+        return ReplayClient(str(p / f"{query}.json" if p.is_dir() else p))
+    return AnthropicClient(model=args.model)
+
+
+def _cmd_agent(args) -> None:
+    if args.agent_cmd == "questions":
+        from .agent import TASKS
+        for q, (_name, text) in TASKS.items():
+            print(f"{q}: {text}\n")
+        return
+    if args.agent_cmd == "checks":
+        _agent_checks(args)
+        return
+    if args.agent_cmd == "mcp":
+        from .agent.mcp_server import serve
+        serve(_agent_conn(args, quiet=True), plot_dir=args.plot_dir,
+              check_log=args.check_log or None)
+        return
+
+    conn = _agent_conn(args)
+    try:
+        if args.agent_cmd == "ask":
+            _agent_ask(args, conn)
+        else:
+            _agent_eval(args, conn)
+    except Exception as exc:
+        # Model-API failures (no credits, bad key, network): one clear line,
+        # not a traceback through the SDK.
+        if type(exc).__module__.split(".")[0] == "anthropic":
+            msg = getattr(exc, "message", None) or str(exc)
+            body = getattr(exc, "body", None)
+            if isinstance(body, dict):
+                msg = body.get("error", {}).get("message", msg)
+            raise SystemExit(f"API error ({type(exc).__name__}): {msg}") from None
+        raise
+    finally:
+        conn.close()
+
+
+def _agent_checks(args) -> None:
+    import json
+    import pathlib
+    path = pathlib.Path(args.check_log)
+    if not path.exists():
+        raise SystemExit(f"no check log at {path}")
+    entries = [json.loads(line) for line in path.read_text().splitlines() if line]
+    first: dict[str, dict] = {}
+    last: dict[str, dict] = {}
+    tries: dict[str, int] = {}
+    for e in entries:
+        first.setdefault(e["query"], e)
+        last[e["query"]] = e
+        tries[e["query"]] = tries.get(e["query"], 0) + 1
+    print(f"{'query':5s} {'first':6s} {'final':6s} {'tries':>5s} {'route':8s} detail")
+    for q in sorted(last):
+        f, la = first[q], last[q]
+        print(f"{q:5s} {'PASS' if f['passed'] else 'FAIL':6s} "
+              f"{'PASS' if la['passed'] else 'FAIL':6s} {tries[q]:5d} "
+              f"{la.get('route', '-')!s:8s} {la['reason']}")
+    n = sum(e["passed"] for e in first.values())
+    print(f"\n{n}/{len(first)} passed on first check ({len(entries)} checks logged)")
+
+
+def _agent_ask(args, conn) -> None:
+    import json
+
+    from .agent import AnalysisTools, ReplayClient, run_agent
+    from .agent.tools import summarize
+
+    client = _agent_client(args)
+    question = args.question
+    if question is None and isinstance(client, ReplayClient):
+        question = client.question
+    if not question:
+        raise SystemExit("give a question (or --replay a transcript)")
+    print(f"question: {question}\n")
+    run = run_agent(question, AnalysisTools(conn, plot_dir=args.plot_dir), client,
+                    max_turns=args.max_turns, echo=print)
+    print(f"\nstopped: {run.stopped} after {run.turns} turns, {run.wall_s}s, "
+          f"{run.usage['input_tokens'] + run.usage['output_tokens']} tokens")
+    for eng, s in run.engine_summary().items():
+        print(f"  {eng:8s} calls={s['calls']} errors={s['errors']} time={s['ms']} ms")
+    if run.answer is not None:
+        print(f"\nanswer via {run.answer_info['route']}: "
+              f"{run.answer_info['explanation']}")
+        s = summarize(run.answer)
+        print(json.dumps({k: v for k, v in s.items() if k != "histogram"}))
+        if args.plot:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.hist(run.answer, bins=40, histtype="stepfilled", color="#3b6fb6",
+                    alpha=0.85, edgecolor="#26456e")
+            ax.set_title(question[:70] + ("…" if len(question) > 70 else ""),
+                         fontsize=8)
+            fig.tight_layout()
+            fig.savefig(args.plot, dpi=120)
+            print(f"saved figure -> {args.plot}")
+    if args.transcript:
+        run.save(args.transcript)
+        print(f"transcript -> {args.transcript}")
+
+
+def _agent_eval(args, conn) -> None:
+    from .agent import TASKS, evaluate, format_table
+    queries = ([q.strip().upper() for q in args.queries.split(",")]
+               if args.queries else list(TASKS))
+    unknown = [q for q in queries if q not in TASKS]
+    if unknown:
+        raise SystemExit(f"unknown queries {unknown}; choose from {list(TASKS)}")
+    rows = evaluate(conn, lambda q: _agent_client(args, q), queries=queries,
+                    max_turns=args.max_turns, echo=print,
+                    transcripts_dir=args.transcripts)
+    print("\n" + format_table(rows))
+
 
 
 # Parser
@@ -499,6 +644,10 @@ def build_parser() -> argparse.ArgumentParser:
     mn.add_argument("--out", default=DEFAULT_NANO)
     mn.add_argument("--events", type=int, default=2000)
     mn.add_argument("--seed", type=int, default=0)
+    mn.add_argument("--format", choices=("rntuple", "ttree"), default="rntuple",
+                    help="RNTuple (uproot's default) or classic NanoAOD TTree")
+    mn.add_argument("--no-triggers", action="store_true",
+                    help="omit the HLT_* branches (their columns load as NULL)")
     mn.set_defaults(func=_cmd_make_nano)
 
     bn = sub.add_parser("bench", help="benchmark backends (awkward/hybrid/rdataframe)")
@@ -524,6 +673,55 @@ def build_parser() -> argparse.ArgumentParser:
     bn.add_argument("--dbdir", default=None)
     _add_server_args(bn)
     bn.set_defaults(func=_cmd_bench)
+
+    ag = sub.add_parser("agent", help="LLM agent that routes SQL vs Awkward work")
+    ags = ag.add_subparsers(dest="agent_cmd", required=True)
+
+    def _agent_common(sp, model=True):
+        sp.add_argument("--from-root", default=None, metavar="ROOT",
+                        help="load this NanoAOD file into a throwaway embedded "
+                             "database instead of connecting to a server")
+        sp.add_argument("--backend", choices=("server", "monetdbe", "sqlite"),
+                        default="server",
+                        help="with --from-root: monetdbe or sqlite (default: "
+                             "monetdbe if installed)")
+        _add_server_args(sp)
+        if model:
+            from .agent.loop import DEFAULT_MODEL
+            sp.add_argument("--model", default=DEFAULT_MODEL)
+            sp.add_argument("--max-turns", type=int, default=16)
+            sp.add_argument("--replay", default=None, metavar="JSON_OR_DIR",
+                            help="replay saved model turns (offline demo); "
+                                 "tools still run live")
+
+    aa = ags.add_parser("ask", help="answer one analysis question")
+    aa.add_argument("question", nargs="?", default=None)
+    aa.add_argument("--transcript", default=None, metavar="JSON")
+    aa.add_argument("--plot", default=None, metavar="PNG")
+    aa.add_argument("--plot-dir", default="output/agent_plots",
+                    help="where the plot_result tool saves PNGs")
+    _agent_common(aa)
+
+    ae = ags.add_parser("eval", help="score the agent on ADL Q1-Q8")
+    ae.add_argument("--queries", default=None, help="e.g. Q1,Q6 (default all)")
+    ae.add_argument("--scripted", action="store_true",
+                    help="use the scripted expert instead of an LLM (baseline)")
+    ae.add_argument("--transcripts", default=None, metavar="DIR",
+                    help="save one transcript per query (replayable)")
+    _agent_common(ae)
+
+    am = ags.add_parser("mcp", help="serve the tools over MCP (stdio)")
+    _agent_common(am, model=False)
+    am.add_argument("--plot-dir", default="output/agent_plots",
+                    help="where the plot_result tool saves PNGs")
+    am.add_argument("--check-log", default="output/agent_checks.jsonl",
+                    help="JSON-lines log of check_answer results ('' = off)")
+
+    aq = ags.add_parser("questions", help="print the ADL Q1-Q8 task texts")
+    aq.set_defaults(agent_cmd="questions")
+    ac = ags.add_parser("checks", help="tabulate check_answer results from MCP")
+    ac.add_argument("--check-log", default="output/agent_checks.jsonl")
+    ag.set_defaults(func=_cmd_agent)
 
     return p
 

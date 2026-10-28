@@ -23,7 +23,7 @@ def _(mo):
     mo.md(r"""
     # ADL Q7 — HT of jets far from any lepton
 
-    Scalar sum of pT over jets with pT > 30, |η| < 2.4 that are **not** within
+    Scalar sum of pT over jets with pT > 30 that are **not** within
     ΔR < 0.4 of a muon with pT > 10. `adl.q7_ht_cleaned` builds the jet×lepton
     pairs with `ak.cartesian(..., nested=True)` and uses `vector`'s `.deltaR`
     (which wraps Δφ correctly) — the schema's lepton collection is `muons`,
@@ -67,7 +67,7 @@ def _(ht, mo, np, plt):
             color="#3b6fb6", alpha=0.85, edgecolor="#26456e")
     ax.set_xlabel("HT [GeV]")
     ax.set_ylabel("events")
-    ax.set_title("Q7: HT of lepton-cleaned jets (pT>30, |η|<2.4, ΔR>0.4)")
+    ax.set_title("Q7: HT of lepton-cleaned jets (pT>30, ΔR>0.4)")
     fig.tight_layout()
     mo.vstack([
         mo.md(f"**{ht.size:,}** events (mean HT {np.mean(ht):.1f} GeV)"

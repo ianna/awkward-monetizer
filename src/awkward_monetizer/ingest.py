@@ -24,30 +24,47 @@ from .keys import DEFAULT_LAYOUT, KeyLayout
 # --------------------------------------------------------------------------
 # ROOT -> Awkward
 # --------------------------------------------------------------------------
+def is_tree_class(cls: str) -> bool:
+    """True for a TTree or an RNTuple (``ROOT::RNTuple``, or the pre-6.34
+    ``ROOT::Experimental::RNTuple``). uproot reads both through the same
+    ``keys`` / ``arrays`` / ``iterate`` / ``num_entries`` interface."""
+    return cls == "TTree" or cls.split("::")[-1] == "RNTuple"
+
+
+def find_tree_name(f) -> str:
+    """Name (without cycle) of the first TTree or RNTuple in an open file."""
+    for name, cls in f.classnames().items():
+        if is_tree_class(cls):
+            return name.split(";")[0]
+    raise KeyError(f"no TTree or RNTuple found in file; keys: {list(f.keys())}")
+
+
 def open_tree(f, tree: str | None):
-    """Return the requested TTree, or the first TTree in the file if None."""
+    """Return the requested TTree/RNTuple, or the first one in the file if None."""
     if tree:
         if tree in f:
             return f[tree]
         raise KeyError(f"tree {tree!r} not found; available: {list(f.keys())}")
-    for name, cls in f.classnames().items():
-        if cls == "TTree":
-            return f[name]
-    raise KeyError(f"no TTree found in file; keys: {list(f.keys())}")
+    return f[find_tree_name(f)]
+
+
+def _check_branches(path: str, t, ds: Dataset) -> list[str]:
+    """Raise if a required branch is missing; return the branches to read."""
+    available = set(t.keys())
+    missing = [b for b in ds.all_branches() if b not in available]
+    if missing:
+        raise KeyError(
+            f"branches not found in {path}:{t.name}: {missing}\n"
+            f"available: {sorted(available)}"
+        )
+    return ds.read_branches(available)
 
 
 def read_root(path: str, ds: Dataset, tree: str | None,
               entry_stop: int | None = None):
     with uproot.open(path) as f:
         t = open_tree(f, tree if tree is not None else ds.tree)
-        wanted = ds.all_branches()
-        available = set(t.keys())
-        missing = [b for b in wanted if b not in available]
-        if missing:
-            raise KeyError(
-                f"branches not found in {path}:{t.name}: {missing}\n"
-                f"available: {sorted(available)}"
-            )
+        wanted = _check_branches(path, t, ds)
         return t.arrays(wanted, entry_stop=entry_stop), t.name
 
 
@@ -76,6 +93,12 @@ def build_events_table(events: ak.Array, ds: Dataset, id_offset: int = 0,
     cols = {"event_id": eid}
     for dest, branch in ds.events.fields.items():
         cols[dest] = np.asarray(events[branch])
+    present = set(ak.fields(events))
+    for dest, branch in ds.flags.items():
+        if branch in present:
+            cols[dest] = np.asarray(events[branch]).astype(bool)
+        else:  # path not in this file's trigger menu -> NULL, not False
+            cols[dest] = pd.array([pd.NA] * n, dtype="boolean")
     for col, kind, ref in ds.derived:
         if kind == "count":
             cols[col] = np.asarray(ak.num(events[ref], axis=1))
@@ -203,7 +226,11 @@ def _insert_many(cur, table: str, df: pd.DataFrame) -> None:
     cols = ",".join(df.columns)
     placeholders = ",".join(["%s"] * len(df.columns))
     sql = f"INSERT INTO {table} ({cols}) VALUES ({placeholders})"
-    rows = [tuple(v.item() if hasattr(v, "item") else v for v in row)
+    def py(v):  # numpy scalar -> Python; pandas NA (nullable flags) -> NULL
+        if v is pd.NA:
+            return None
+        return v.item() if hasattr(v, "item") else v
+    rows = [tuple(py(v) for v in row)
             for row in df.itertuples(index=False, name=None)]
     cur.executemany(sql, rows)
 
@@ -258,7 +285,7 @@ def ingest_root_chunked(path: str, ds: Dataset, conn, *, tree: str | None = None
             for name in tables_to_clear:
                 cur.execute(f"DELETE FROM {name} WHERE event_id >= {lo} "
                             f"AND event_id {op} {hi}")
-        for chunk in t.iterate(ds.all_branches(), step_size=step_size,
+        for chunk in t.iterate(_check_branches(path, t, ds), step_size=step_size,
                                entry_start=first, entry_stop=entry_stop):
             tables = build_tables(chunk, ds, id_offset=first + total,
                                   file_id=file_id, layout=layout)

@@ -163,6 +163,11 @@ def binary_columns(df: pd.DataFrame, cols: list[tuple[str, str]]):
         dt = _BINARY_DTYPES.get(sqltype)
         if dt is None:
             return None
+        if df[col].isna().any():
+            # NULLs (e.g. a trigger flag missing from this file's menu) can't
+            # be sent in binary: MonetDB rejects any BOOLEAN byte except 0/1,
+            # so this table goes over CSV, where '' means NULL
+            return None
         src = df[col].to_numpy()
         if src.dtype.kind not in "biuf":
             return None

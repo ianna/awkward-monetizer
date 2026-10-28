@@ -49,6 +49,23 @@ class Dataset:
     #   kind "count" -> ak.num of a jagged ref branch
     #   kind "const" -> a constant value ref
     derived: list = field(default_factory=list)
+    # optional boolean event flags, e.g. HLT trigger bits: {dest column: branch}.
+    # A flag is read when its branch exists in the file and stored as NULL when
+    # it doesn't, so one schema serves files with different trigger menus.
+    # Flags are not part of all_branches() (they are never required).
+    flags: dict = field(default_factory=dict)
+
+    def present_flags(self, available) -> dict:
+        """The subset of :attr:`flags` whose branches are in ``available``."""
+        available = set(available)
+        return {d: b for d, b in self.flags.items() if b in available}
+
+    def read_branches(self, available) -> list[str]:
+        """Branches to read from a file whose branch names are ``available``:
+        every required branch plus the flags that file actually has."""
+        names = self.all_branches()
+        return names + [b for b in self.present_flags(available).values()
+                        if b not in names]
 
     def all_branches(self) -> list[str]:
         names: list[str] = list(self.events.fields.values())
@@ -117,7 +134,15 @@ NANOAOD = Dataset(
                       "mass": "Muon_mass", "charge": "Muon_charge"},
         ),
     ],
-    derived=[("n_jets", "count", "Jet_pt")],
+    # stored multiplicities, so `count(Muon) >= k` is a plain events-column cut
+    derived=[("n_jets", "count", "Jet_pt"), ("n_muons", "count", "Muon_pt")],
+    # trigger bits (NULL when a file's menu doesn't have the path); column names
+    # are lower-case because MonetDB folds unquoted identifiers to lower case
+    flags={
+        "hlt_isomu24": "HLT_IsoMu24",
+        "hlt_isomu27": "HLT_IsoMu27",
+        "hlt_mu17_mu8_dz": "HLT_Mu17_TrkIsoVVL_Mu8_TrkIsoVVL_DZ",
+    },
 )
 
 DATASETS = {ds.name: ds for ds in (DIMUON, NANOAOD)}

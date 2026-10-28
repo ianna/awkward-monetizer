@@ -28,6 +28,9 @@ uproot = "*"
 carbontracker = ">=2.4"   # energy/CO2 of the workflow (examples/carbon_workflow.py)
 # PDF reports: carbontracker[pdfreport] pins reportlab 3.6.13 (no py3.12 wheels)
 reportlab = ">=4"
+# LLM agent loop (needs ANTHROPIC_API_KEY) and MCP server
+anthropic = "*"
+mcp = "*"
 # The project itself, editable, so the `awkward-monetizer` CLI is on PATH.
 awkward-monetizer = { path = ".", editable = true }
 
@@ -57,5 +60,10 @@ bench = "awkward-monetizer bench --root-file data/cms.root --scale 20"
 notebook = "marimo edit examples/analysis.py"
 # Run the test suite
 test = "pytest"
+# Agentic analysis (docs/agent.md). One-time DB: monetdb create hep_agent && monetdb release hep_agent
+agent-db = "awkward-monetizer ingest data/nano_bench.root --dataset nanoaod --database hep_agent --create-schema"
+agent-baseline = "awkward-monetizer agent eval --scripted --database hep_agent"
+agent-eval = "awkward-monetizer agent eval --database hep_agent --transcripts output/agent_runs"
+agent-mcp = "awkward-monetizer agent mcp --database hep_agent"
 # Energy / carbon footprint per workflow stage (macOS: run `sudo -v` first)
 carbon = "python examples/carbon_workflow.py --shards shards.json --manifest manifest.json --pdf"
