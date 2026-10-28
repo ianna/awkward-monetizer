@@ -336,3 +336,62 @@ def test_mcp_server_lists_all_tools(sqlite_conn):
                      "plot_result", "check_answer"}
     # the routing rule reaches MCP clients as server instructions
     assert "combinatorics" in server.instructions and "check_answer" in server.instructions
+
+
+# --------------------------------------------------------------------------
+# Large databases: chunked by event_id range
+# --------------------------------------------------------------------------
+def test_event_ranges_cover_every_event_once(conn):
+    from awkward_monetizer.agent.tools import event_ranges
+    assert event_ranges(conn, 10**9) is None          # small: one pass
+    ranges = event_ranges(conn, 200)
+    cur = conn.cursor()
+    total = 0
+    for lo, hi in ranges:
+        cur.execute(f"SELECT COUNT(*) FROM events WHERE event_id >= {lo} "
+                    f"AND event_id < {hi}")
+        total += cur.fetchall()[0][0]
+    cur.execute("SELECT COUNT(*) FROM events")
+    assert total == cur.fetchall()[0][0]
+    assert len(ranges) > 1
+
+
+def test_chunked_reference_and_scripted_expert_match_single_pass(conn):
+    full = reference_answers(conn)
+    chunked = reference_answers(conn, chunk_events=200)
+    for q in TASKS:
+        assert compare(chunked[q], full[q])[0], q
+    rows = evaluate(conn, lambda q: ScriptedClient(expert_script(q)),
+                    chunk_events=200)
+    assert all(r.passed for r in rows), format_table(rows)
+
+
+def test_chunked_awkward_eval_projects_and_falls_back(conn):
+    big = AnalysisTools(conn)
+    small = AnalysisTools(conn, chunk_events=200)
+    code = "result = events.met_pt"
+    a = json.loads(big.call("awkward_eval", {"code": code})[0])
+    b = json.loads(small.call("awkward_eval", {"code": code})[0])
+    assert b["chunks"] > 1 and b["events_fetched"] == a["events_fetched"]
+    np.testing.assert_array_equal(small.results[b["result_id"]],
+                                  big.results[a["result_id"]])
+    assert set(small._projection(check_code(code))) == {"events"}  # no objects
+    # subscripting by string still projects the right column
+    c = json.loads(small.call("awkward_eval",
+                              {"code": 'result = ak.num(events["jets"], axis=1)',
+                               "where": "n_jets >= 1"})[0])
+    assert c["summary"]["min/q25/median/q75/max"][0] >= 1
+    # a column the projection cannot see is fetched by the unprojected retry
+    d = small.call("awkward_eval", {"code": "f = ak.fields(events)\n"
+                                    "result = events[f[f.index('met_pt')]]"})
+    assert not d[1], d[0]
+
+
+def test_reference_cache_roundtrip(sqlite_conn, tmp_path, monkeypatch):
+    import sys
+    ev = sys.modules["awkward_monetizer.agent.evaluate"]
+    path = str(tmp_path / "refs.npz")
+    first = reference_answers(sqlite_conn, cache=path)
+    monkeypatch.setattr(ev, "fetch_tables", lambda *a, **k: 1 / 0)  # must not run
+    again = reference_answers(sqlite_conn, ["Q2", "Q6"], cache=path)
+    np.testing.assert_array_equal(again["Q6"], first["Q6"])

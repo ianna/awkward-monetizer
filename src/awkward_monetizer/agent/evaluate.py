@@ -10,6 +10,7 @@ not just produced plausible numbers.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 
@@ -18,7 +19,7 @@ import numpy as np
 from .. import adl
 from ..reconstruct import fetch_tables, reconstruct_multi
 from .loop import ModelClient, run_agent
-from .tools import AnalysisTools
+from .tools import CHUNK_EVENTS, AnalysisTools, event_ranges
 
 TASKS: dict[str, tuple[str, str]] = {
     "Q1": ("Q1: MET (all events)",
@@ -56,16 +57,73 @@ TASKS: dict[str, tuple[str, str]] = {
 }
 
 
-def reference_answers(conn, queries=None) -> dict[str, np.ndarray]:
-    """Ground truth from the hand-written ADL functions on the DB contents."""
-    ev_df, jets = fetch_tables(conn, collection="jets")
-    _, muons = fetch_tables(conn, collection="muons")
-    events = reconstruct_multi(ev_df, {"jets": jets, "muons": muons})
-    out = {}
-    for q in queries or TASKS:
-        fn = adl.QUERIES[TASKS[q][0]]
-        out[q] = np.asarray(fn(events), dtype=np.float64)
+def reference_answers(conn, queries=None, *, chunk_events: int = CHUNK_EVENTS,
+                      cache: str | None = None) -> dict[str, np.ndarray]:
+    """Ground truth from the hand-written ADL functions on the DB contents.
+
+    Large databases are read in event_id-range chunks (every ADL query is
+    per event, so the chunk results simply concatenate). ``cache`` names an
+    ``.npz`` file: answers are loaded from it when it was written for the same
+    table sizes, and written to it otherwise -- a full pass over tens of
+    millions of events then happens once, not on every check.
+    """
+    queries = list(queries or TASKS)
+    sizes = _table_sizes(conn)
+    if cache:
+        hit = _load_cache(cache, sizes, queries)
+        if hit is not None:
+            return hit
+    ranges = event_ranges(conn, chunk_events)
+    parts: dict[str, list[np.ndarray]] = {q: [] for q in queries}
+    for rng in ranges or [None]:
+        ev_df, jets = fetch_tables(conn, collection="jets", event_range=rng)
+        _, muons = fetch_tables(conn, collection="muons", event_range=rng)
+        if len(ev_df) == 0:
+            continue
+        events = reconstruct_multi(ev_df, {"jets": jets, "muons": muons})
+        for q in queries:
+            fn = adl.QUERIES[TASKS[q][0]]
+            parts[q].append(np.asarray(fn(events), dtype=np.float64))
+    out = {q: (np.concatenate(v) if v else np.empty(0, dtype=np.float64))
+           for q, v in parts.items()}
+    if cache:
+        _save_cache(cache, sizes, out)
     return out
+
+
+def _table_sizes(conn) -> dict[str, int]:
+    cur = conn.cursor()
+    try:
+        out = {}
+        for t in ("events", "jets", "muons"):
+            cur.execute(f"SELECT COUNT(*), MIN(event_id), MAX(event_id) FROM {t}")
+            n, lo, hi = cur.fetchall()[0]
+            out[t] = [int(n), int(lo or 0), int(hi or 0)]
+        return out
+    finally:
+        cur.close()
+
+
+def _load_cache(path: str, sizes: dict, queries: list[str]):
+    import json
+    import pathlib
+    p = pathlib.Path(path).expanduser()
+    if not p.exists():
+        return None
+    with np.load(p) as z:
+        if json.loads(str(z["_sizes"])) != sizes:
+            return None
+        if not all(q in z.files for q in queries):
+            return None
+        return {q: z[q] for q in queries}
+
+
+def _save_cache(path: str, sizes: dict, answers: dict) -> None:
+    import json
+    import pathlib
+    p = pathlib.Path(path).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(p, _sizes=np.array(json.dumps(sizes)), **answers)
 
 
 def _n_matched(a: np.ndarray, b: np.ndarray, rtol: float, atol: float) -> int:
@@ -73,20 +131,34 @@ def _n_matched(a: np.ndarray, b: np.ndarray, rtol: float, atol: float) -> int:
 
     Unlike an element-wise comparison of the sorted arrays, one wrong value does
     not shift every later pair out of alignment, so the count of unmatched
-    values reflects how many values are actually wrong.
+    values reflects how many values are actually wrong. The leading and
+    trailing runs that already agree element-wise are counted directly, so the
+    Python loop only walks the region that differs.
     """
+    n = min(a.size, b.size)
+    close = np.isclose(a[:n], b[:n], rtol=rtol, atol=atol, equal_nan=True)
+    bad = np.flatnonzero(~close)
+    if bad.size == 0:
+        return n
+    lo = int(bad[0])
+    tail = 0
+    if a.size == b.size:
+        hi = int(bad[-1]) + 1
+        tail = n - hi
+    a_mid = a[lo:a.size - tail].tolist()
+    b_mid = b[lo:b.size - tail].tolist()
     i = j = matched = 0
-    while i < a.size and j < b.size:
-        if abs(a[i] - b[j]) <= atol + rtol * abs(b[j]) or (
-                np.isnan(a[i]) and np.isnan(b[j])):
+    while i < len(a_mid) and j < len(b_mid):
+        x, y = a_mid[i], b_mid[j]
+        if abs(x - y) <= atol + rtol * abs(y) or (math.isnan(x) and math.isnan(y)):
             matched += 1
             i += 1
             j += 1
-        elif a[i] < b[j]:
+        elif x < y:
             i += 1
         else:
             j += 1
-    return matched
+    return lo + tail + matched
 
 
 def compare(got: np.ndarray | None, ref: np.ndarray, *, rtol=1e-6,
@@ -121,7 +193,9 @@ class EvalRow:
 
 
 def evaluate(conn, client_factory, *, queries=None, max_turns: int = 16,
-             echo=None, transcripts_dir: str | None = None) -> list[EvalRow]:
+             echo=None, transcripts_dir: str | None = None,
+             chunk_events: int = CHUNK_EVENTS,
+             ref_cache: str | None = None) -> list[EvalRow]:
     """Run each ADL task with a fresh agent and score it.
 
     ``client_factory(query_id)`` returns a :class:`ModelClient` (a fresh client
@@ -130,11 +204,12 @@ def evaluate(conn, client_factory, *, queries=None, max_turns: int = 16,
     import pathlib
     say = echo or (lambda *a, **k: None)
     queries = list(queries or TASKS)
-    refs = reference_answers(conn, queries)
+    refs = reference_answers(conn, queries, chunk_events=chunk_events,
+                             cache=ref_cache)
     rows = []
     for q in queries:
         say(f"\n=== {q}: {TASKS[q][1]}")
-        tools = AnalysisTools(conn)
+        tools = AnalysisTools(conn, chunk_events=chunk_events)
         client: ModelClient = client_factory(q)
         t0 = time.perf_counter()
         run = run_agent(TASKS[q][1], tools, client, max_turns=max_turns, echo=echo)

@@ -18,7 +18,7 @@ results, including retries, can be tabulated afterwards with
 from __future__ import annotations
 
 from .loop import SYSTEM_PROMPT
-from .tools import CHECK_SPEC, TOOL_SPECS, AnalysisTools
+from .tools import CHECK_SPEC, CHUNK_EVENTS, TOOL_SPECS, AnalysisTools
 
 # MCP clients never see the built-in loop's system prompt, only these server
 # instructions and the tool descriptions. Without them, an agent driving the
@@ -74,5 +74,8 @@ def build_server(tools: AnalysisTools, instructions: str = MCP_INSTRUCTIONS):
 
 
 def serve(conn, *, plot_dir: str = "output/agent_plots",
-          check_log: str | None = "output/agent_checks.jsonl") -> None:
-    build_server(AnalysisTools(conn, plot_dir=plot_dir, check_log=check_log)).run()
+          check_log: str | None = "output/agent_checks.jsonl",
+          chunk_events: int = CHUNK_EVENTS, ref_cache: str | None = None) -> None:
+    build_server(AnalysisTools(conn, plot_dir=plot_dir, check_log=check_log,
+                               chunk_events=chunk_events,
+                               ref_cache=ref_cache)).run()

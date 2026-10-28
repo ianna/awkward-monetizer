@@ -18,7 +18,7 @@ Example::
         > data/2016H_files.txt
     monetdb create hep2016h && monetdb release hep2016h
     python examples/ingest_record.py data/2016H_files.txt --database hep2016h \\
-        --create-schema --jobs 4
+        --create-schema
 
 Reading ``root://`` URLs needs XRootD support for uproot (``fsspec-xrootd`` and
 the XRootD Python bindings; both are in the pixi environment). ``https://`` URLs
@@ -111,7 +111,9 @@ def main(argv=None) -> None:
     ap.add_argument("--manifest", default=None,
                     help="default: <url_list stem>_manifest.json")
     ap.add_argument("--log", default=None, help="default: <url_list stem>_ingest.jsonl")
-    ap.add_argument("--jobs", type=int, default=4, help="files loaded in parallel")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="files loaded in parallel; MonetDB aborts concurrent "
+                         "writers to the same tables at COMMIT, so keep 1")
     ap.add_argument("--step-size", default="200000",
                     help="entries per chunk (or a size such as '100 MB')")
     ap.add_argument("--retries", type=int, default=1)

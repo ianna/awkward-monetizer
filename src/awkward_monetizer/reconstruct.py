@@ -112,6 +112,7 @@ def fetch_tables(conn, where: str | None = None, collection: str = "muons", *,
                  event_columns: tuple[str, ...] | None = None,
                  object_columns: tuple[str, ...] | None = None,
                  timings: dict[str, float] | None = None,
+                 event_range: tuple[int, int] | None = None,
                  ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch events and matching objects, optionally projecting named columns.
 
@@ -119,6 +120,10 @@ def fetch_tables(conn, where: str | None = None, collection: str = "muons", *,
     Column arguments are schema column names, not SQL expressions. Defaults
     preserve the full-table API. Timings measure client execute/fetch/convert
     calls; execute may include transfer of the driver's initial result batch.
+
+    ``event_range=(lo, hi)`` restricts both queries to ``lo <= event_id < hi``,
+    applied to the object table directly as well, so a large table can be read
+    in chunks without scanning a join over all of it each time.
     """
     def projection(columns, prefix=""):
         if columns is None:
@@ -129,12 +134,20 @@ def fetch_tables(conn, where: str | None = None, collection: str = "muons", *,
 
     ev_projection = projection(event_columns)
     obj_projection = projection(object_columns, "objects.")
-    selection = f" WHERE {where}" if where else ""
+    if event_range is not None:
+        lo, hi = (int(v) for v in event_range)
+        span = f"event_id >= {lo} AND event_id < {hi}"
+        ev_where = f"{span} AND ({where})" if where else span
+    else:
+        span, ev_where = None, where
+    selection = f" WHERE {ev_where}" if ev_where else ""
     ev_sql = f"SELECT {ev_projection} FROM events{selection}"
     obj_sql = f"SELECT {obj_projection} FROM {collection} AS objects"
     if where:
         obj_sql += (f" JOIN (SELECT event_id FROM events{selection}) AS selected"
                     " ON objects.event_id = selected.event_id")
+    if span:
+        obj_sql += f" WHERE objects.event_id >= {lo} AND objects.event_id < {hi}"
 
     cur = conn.cursor()
 

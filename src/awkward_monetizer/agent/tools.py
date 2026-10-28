@@ -49,6 +49,13 @@ from ..reconstruct import fetch_tables, reconstruct_multi
 
 COLLECTIONS = ("jets", "muons")
 PREVIEW_ROWS = 50
+# Above this many events, awkward_eval, SQL answers and the ADL reference are
+# processed in event_id-range chunks, so the full record (tens of millions of
+# events, hundreds of millions of jets) never has to be in memory at once.
+CHUNK_EVENTS = 1_000_000
+FETCH_BATCH = 1_000_000
+# Columns jets_p4 / muons_p4 read.
+P4_COLUMNS = ("pt", "eta", "phi", "mass")
 
 TABLE_NOTES = {
     "events": "one row per collision event. event_id is the primary key and the "
@@ -106,8 +113,11 @@ TOOL_SPECS = [
             "jets_p4(events) and muons_p4(events) (scikit-hep vector Momentum4D "
             "arrays with .mass .pt .deltaR(), addable with +), Z_MASS, TOP_MASS. "
             "The code must assign a 1-D numeric array (one value per histogram "
-            "entry, no None) to a variable named `result`. No imports. Returns "
-            "a summary and a result_id for submit_answer."),
+            "entry, no None) to a variable named `result`. No imports. On a "
+            "large database the code runs on consecutive chunks of events and "
+            "the results are concatenated, so compute event by event (no "
+            "normalising by global totals). Returns a summary and a result_id "
+            "for submit_answer."),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -329,6 +339,63 @@ def _jsonable(v):
     return str(v)
 
 
+def event_ranges(conn, chunk_events: int = CHUNK_EVENTS
+                 ) -> list[tuple[int, int]] | None:
+    """Split the events table into ``[lo, hi)`` event_id ranges of roughly
+    ``chunk_events`` events, or return None when it fits in one chunk.
+
+    Ranges follow the file part of the key (``event_id >> 40``), where entries
+    are contiguous, so chunks are evenly filled; sparse ids just give more,
+    smaller chunks. Every event falls in exactly one range.
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COUNT(*) FROM events")
+        total = int(cur.fetchall()[0][0])
+        if total <= chunk_events:
+            return None
+        cur.execute("SELECT f, MIN(event_id), MAX(event_id), COUNT(*) FROM "
+                    "(SELECT event_id >> 40 AS f, event_id FROM events) AS t "
+                    "GROUP BY f ORDER BY f")
+        groups = cur.fetchall()
+    finally:
+        cur.close()
+    out = []
+    for _, lo, hi, n in groups:
+        lo, hi, n = int(lo), int(hi) + 1, int(n)
+        step = max(1, -(-chunk_events * (hi - lo) // n))   # ceil
+        out.extend((a, min(a + step, hi)) for a in range(lo, hi, step))
+    return out
+
+
+def _fetch_values(cur, batch: int = FETCH_BATCH) -> np.ndarray:
+    """First column of an executed query as float64, read in batches."""
+    parts = []
+    while True:
+        rows = cur.fetchmany(batch)
+        if not rows:
+            break
+        col = [r[0] for r in rows]
+        if any(v is None for v in col):
+            raise ToolError("first column contains NULL; filter them out")
+        parts.append(np.asarray(col, dtype=np.float64))
+    return np.concatenate(parts) if parts else np.empty(0, dtype=np.float64)
+
+
+def _names_used(tree: ast.Module) -> set[str]:
+    """Attribute names, variable names and string constants in the code: a
+    superset of the columns it can read, used to project what is fetched."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names.add(node.value)
+    return names
+
+
 # --------------------------------------------------------------------------
 # The tool set
 # --------------------------------------------------------------------------
@@ -337,8 +404,15 @@ class AnalysisTools:
 
     def __init__(self, conn, *, tables: tuple[str, ...] = ("events",) + COLLECTIONS,
                  plot_dir: str = "output/agent_plots",
-                 check_log: str | None = None):
+                 check_log: str | None = None,
+                 chunk_events: int = CHUNK_EVENTS,
+                 ref_cache: str | None = None):
         self.conn = conn
+        self.chunk_events = int(chunk_events)
+        self.ref_cache = ref_cache
+        self._ranges: list | None = None
+        self._ranges_known = False
+        self._colcache: dict[str, list[str]] = {}
         self.tables = tables
         self.plot_dir = Path(plot_dir).expanduser().resolve()
         self.check_log = Path(check_log).expanduser().resolve() if check_log else None
@@ -461,13 +535,76 @@ class AnalysisTools:
         try:
             cur.execute(s)
             cols = [d[0] for d in cur.description]
-            rows = cur.fetchall()
+            n = getattr(cur, "rowcount", -1)
+            if n is not None and n >= 0:     # MonetDB knows the count up front:
+                rows = cur.fetchmany(max_rows)  # do not transfer the rest
+            else:                            # e.g. SQLite
+                rows = cur.fetchall()
+                n = len(rows)
         finally:
             cur.close()
         preview = [[_jsonable(v) for v in r] for r in rows[:max_rows]]
-        return {"columns": cols, "row_count": len(rows), "rows": preview,
-                "truncated": len(rows) > max_rows,
-                "_summary": f"{len(rows)} rows x {len(cols)} cols"}
+        return {"columns": cols, "row_count": n, "rows": preview,
+                "truncated": n > len(preview),
+                "_summary": f"{n} rows x {len(cols)} cols"}
+
+    def ranges(self) -> list[tuple[int, int]] | None:
+        """event_id chunks for this database (None: small enough for one)."""
+        if not self._ranges_known:
+            self._ranges = event_ranges(self.conn, self.chunk_events)
+            self._ranges_known = True
+        return self._ranges
+
+    def _table_columns(self, table: str) -> list[str]:
+        if table not in self._colcache:
+            cur = self.conn.cursor()
+            try:
+                self._colcache[table] = list(self._columns(cur, table))
+            finally:
+                cur.close()
+        return self._colcache[table]
+
+    def _projection(self, tree: ast.Module) -> dict:
+        """Columns to fetch per table for this code (None = all columns)."""
+        used = _names_used(tree)
+        ev_cols = [c for c in self._table_columns("events")
+                   if c == "event_id" or c in used]
+        out = {"events": ev_cols}
+        for coll, p4 in (("jets", "jets_p4"), ("muons", "muons_p4")):
+            if coll not in used and p4 not in used:
+                continue          # collection never touched: do not fetch it
+            cols = self._table_columns(coll)
+            want = set(used) | ({*P4_COLUMNS} if p4 in used else set())
+            out[coll] = [c for c in cols if c == "event_id"
+                         or c.endswith("_index") or c in want]
+        return out
+
+    def _chunk(self, rng, where, proj) -> ak.Array:
+        evc = proj["events"] if proj else None
+        ev_df = None
+        colls = {}
+        for coll in COLLECTIONS:
+            if proj is not None and coll not in proj:
+                continue
+            e, o = fetch_tables(self.conn, where=where, collection=coll,
+                                event_columns=evc,
+                                object_columns=proj[coll] if proj else None,
+                                event_range=rng)
+            ev_df = e if ev_df is None else ev_df
+            colls[coll] = o
+        if ev_df is None:         # code reads only event-level columns
+            cur = self.conn.cursor()
+            try:
+                span = f"event_id >= {rng[0]} AND event_id < {rng[1]}"
+                w = f"{span} AND ({where})" if where else span
+                cols = ", ".join(f'"{c}"' for c in evc)
+                cur.execute(f"SELECT {cols} FROM events WHERE {w}")
+                import pandas as pd
+                ev_df = pd.DataFrame(cur.fetchall(),
+                                     columns=[d[0] for d in cur.description])
+            finally:
+                cur.close()
+        return reconstruct_multi(ev_df, colls)
 
     def _events(self, where: str | None) -> ak.Array:
         if where not in self._events_cache:
@@ -477,42 +614,74 @@ class AnalysisTools:
                 ev_df, {"jets": jets, "muons": muons})
         return self._events_cache[where]
 
-    def awkward_eval(self, code: str, where: str | None = None) -> dict:
-        tree = check_code(code)
-        w = check_where(where)
-        t0 = time.perf_counter()
-        events = self._events(w)
-        t_fetch = (time.perf_counter() - t0) * 1e3
+    def _run_code(self, tree: ast.Module, events: ak.Array) -> np.ndarray:
         scope = {"__builtins__": _SAFE_BUILTINS, "events": events, "ak": ak,
                  "np": np, "jets_p4": jets_p4, "muons_p4": muons_p4,
                  "Z_MASS": Z_MASS, "TOP_MASS": TOP_MASS}
-        t1 = time.perf_counter()
         exec(compile(tree, "<agent>", "exec"), scope)   # noqa: S102 (guarded above)
-        t_compute = (time.perf_counter() - t1) * 1e3
         if "result" not in scope:
             raise ToolError("the code did not set `result`")
-        values = to_values(scope["result"])
+        return to_values(scope["result"])
+
+    def awkward_eval(self, code: str, where: str | None = None) -> dict:
+        tree = check_code(code)
+        w = check_where(where)
+        ranges = self.ranges()
+        t_fetch = t_compute = 0.0
+        n_events = 0
+        if ranges is None:                     # small database: one pass, cached
+            t0 = time.perf_counter()
+            events = self._events(w)
+            t_fetch = (time.perf_counter() - t0) * 1e3
+            t1 = time.perf_counter()
+            values = self._run_code(tree, events)
+            t_compute = (time.perf_counter() - t1) * 1e3
+            n_events = len(events)
+        else:                                  # large: chunk by event_id range
+            proj = self._projection(tree)
+            parts = []
+            for i, rng in enumerate(ranges):
+                t0 = time.perf_counter()
+                events = self._chunk(rng, w, proj)
+                t_fetch += (time.perf_counter() - t0) * 1e3
+                if len(events) == 0:
+                    continue
+                t1 = time.perf_counter()
+                try:
+                    parts.append(self._run_code(tree, events))
+                except Exception:
+                    if i or proj is None:
+                        raise
+                    # The projection may have missed a column the code reads
+                    # indirectly: retry this chunk, and the rest, unprojected.
+                    proj = None
+                    events = self._chunk(rng, w, proj)
+                    parts.append(self._run_code(tree, events))
+                t_compute += (time.perf_counter() - t1) * 1e3
+                n_events += len(events)
+            values = (np.concatenate(parts) if parts
+                      else np.empty(0, dtype=np.float64))
         rid = f"r{len(self.results) + 1}"
         self.results[rid] = values
-        return {"result_id": rid, "events_fetched": len(events),
-                "where": w, "fetch_ms": round(t_fetch, 1),
-                "compute_ms": round(t_compute, 1), "summary": summarize(values),
-                "_summary": f"{rid}: n={values.size} from {len(events)} events"}
+        out = {"result_id": rid, "events_fetched": n_events,
+               "where": w, "fetch_ms": round(t_fetch, 1),
+               "compute_ms": round(t_compute, 1), "summary": summarize(values),
+               "_summary": f"{rid}: n={values.size} from {n_events} events"}
+        if ranges is not None:
+            out["chunks"] = len(ranges)
+        return out
 
     def sql_values(self, sql: str) -> np.ndarray:
         s = check_select(sql)
         cur = self.conn.cursor()
         try:
             cur.execute(s)
-            rows = cur.fetchall()
+            if not cur.description:
+                raise ToolError("query returned no columns")
+            values = _fetch_values(cur)
         finally:
             cur.close()
-        if rows and len(rows[0]) < 1:
-            raise ToolError("query returned no columns")
-        col = [r[0] for r in rows]
-        if any(v is None for v in col):
-            raise ToolError("first column contains NULL; filter them out")
-        return to_values(np.asarray(col, dtype=np.float64))
+        return to_values(values)
 
     def submit_answer(self, explanation: str, result_id: str | None = None,
                       sql: str | None = None) -> dict:
@@ -580,7 +749,10 @@ class AnalysisTools:
         if self.answer is None:
             raise ToolError("no answer submitted yet; call submit_answer first")
         if q not in self._refs:
-            self._refs.update(reference_answers(self.conn, [q]))
+            # all eight in one pass: on a large database each pass reads
+            # every event, so do it once (and cache it on disk if asked)
+            self._refs.update(reference_answers(
+                self.conn, chunk_events=self.chunk_events, cache=self.ref_cache))
         passed, reason = compare(self.answer, self._refs[q])
         attempt = 1 + sum(c["query"] == q for c in self.checks)
         entry = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
