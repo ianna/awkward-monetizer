@@ -7,6 +7,7 @@ platforms = ["osx-arm64", "osx-64", "linux-64"]
 [dependencies]
 python = ">=3.10,<3.13"
 pip = "*"
+xrootd = "*"       # XRootD client + Python bindings: stream root:// files
 numpy = "*"
 pandas = "*"
 pyarrow = "*"
@@ -29,6 +30,7 @@ carbontracker = ">=2.4"   # energy/CO2 of the workflow (examples/carbon_workflow
 # PDF reports: carbontracker[pdfreport] pins reportlab 3.6.13 (no py3.12 wheels)
 reportlab = ">=4"
 # LLM agent loop (needs ANTHROPIC_API_KEY) and MCP server
+fsspec-xrootd = "*"   # uproot.open("root://...")
 anthropic = "*"
 mcp = "*"
 # The project itself, editable, so the `awkward-monetizer` CLI is on PATH.
