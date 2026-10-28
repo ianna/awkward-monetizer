@@ -429,14 +429,16 @@ def _agent_checks(args) -> None:
     entries = [json.loads(line) for line in path.read_text().splitlines() if line]
     first: dict[str, dict] = {}
     last: dict[str, dict] = {}
+    tries: dict[str, int] = {}
     for e in entries:
         first.setdefault(e["query"], e)
         last[e["query"]] = e
+        tries[e["query"]] = tries.get(e["query"], 0) + 1
     print(f"{'query':5s} {'first':6s} {'final':6s} {'tries':>5s} {'route':8s} detail")
     for q in sorted(last):
         f, la = first[q], last[q]
         print(f"{q:5s} {'PASS' if f['passed'] else 'FAIL':6s} "
-              f"{'PASS' if la['passed'] else 'FAIL':6s} {la['attempt']:5d} "
+              f"{'PASS' if la['passed'] else 'FAIL':6s} {tries[q]:5d} "
               f"{la.get('route', '-')!s:8s} {la['reason']}")
     n = sum(e["passed"] for e in first.values())
     print(f"\n{n}/{len(first)} passed on first check ({len(entries)} checks logged)")

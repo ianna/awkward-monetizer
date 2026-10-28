@@ -274,6 +274,10 @@ def test_check_answer_scores_and_logs_attempts(sqlite_conn, tmp_path):
     entries = [json.loads(x) for x in log.read_text().splitlines()]
     assert [(e["query"], e["passed"], e["attempt"]) for e in entries] == [
         ("Q1", False, 1), ("Q1", True, 2)]
+    # a restarted server (new AnalysisTools on the same log) keeps counting
+    t2 = AnalysisTools(sqlite_conn, check_log=str(log))
+    t2.call("submit_answer", {"sql": "SELECT met_pt FROM events", "explanation": "MET"})
+    assert json.loads(t2.call("check_answer", {"query": "Q1"})[0])["attempt"] == 3
 
 
 def test_check_answer_not_offered_to_eval_loop():
@@ -288,7 +292,7 @@ def test_cli_questions_and_checks_table(tmp_path, capsys):
     log = tmp_path / "c.jsonl"
     rows = [{"query": "Q6", "passed": False, "reason": "n=1", "attempt": 1,
              "route": "awkward"},
-            {"query": "Q6", "passed": True, "reason": "ok", "attempt": 2,
+            {"query": "Q6", "passed": True, "reason": "ok", "attempt": 1,
              "route": "awkward"},
             {"query": "Q1", "passed": True, "reason": "ok", "attempt": 1,
              "route": "sql"}]
@@ -296,6 +300,8 @@ def test_cli_questions_and_checks_table(tmp_path, capsys):
     main(["agent", "checks", "--check-log", str(log)])
     out = capsys.readouterr().out
     assert "1/2 passed on first check" in out
+    q6 = next(line for line in out.splitlines() if line.startswith("Q6"))
+    assert q6.split()[1:4] == ["FAIL", "PASS", "2"]   # tries counted from the log
 
 
 def test_cli_reports_api_errors_in_one_line(nano_file, monkeypatch):

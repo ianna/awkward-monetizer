@@ -340,7 +340,15 @@ class AnalysisTools:
         self.tables = tables
         self.plot_dir = Path(plot_dir).expanduser().resolve()
         self.check_log = Path(check_log).expanduser().resolve() if check_log else None
+        # Earlier checks from the same log count towards the attempt number,
+        # so restarting the MCP server cannot reset a query's attempts.
         self.checks: list[dict] = []
+        if self.check_log is not None and self.check_log.exists():
+            for line in self.check_log.read_text().splitlines():
+                try:
+                    self.checks.append(json.loads(line))
+                except ValueError:
+                    continue
         self._refs: dict[str, np.ndarray] = {}
         self._n_plots = 0
         # The tools only read, so run in autocommit: a failed agent query then
