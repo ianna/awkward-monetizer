@@ -54,8 +54,9 @@ PREVIEW_ROWS = 50
 # events, hundreds of millions of jets) never has to be in memory at once.
 CHUNK_EVENTS = 1_000_000
 FETCH_BATCH = 1_000_000
-# Columns jets_p4 / muons_p4 read.
-P4_COLUMNS = ("pt", "eta", "phi", "mass")
+# Columns jets_p4 / muons_p4 read (muons_p4 carries the charge along).
+P4_COLUMNS = {"jets": ("pt", "eta", "phi", "mass"),
+              "muons": ("pt", "eta", "phi", "mass", "charge")}
 
 TABLE_NOTES = {
     "events": "one row per collision event. event_id is the primary key and the "
@@ -574,7 +575,7 @@ class AnalysisTools:
             if coll not in used and p4 not in used:
                 continue          # collection never touched: do not fetch it
             cols = self._table_columns(coll)
-            want = set(used) | ({*P4_COLUMNS} if p4 in used else set())
+            want = set(used) | (set(P4_COLUMNS[coll]) if p4 in used else set())
             out[coll] = [c for c in cols if c == "event_id"
                          or c.endswith("_index") or c in want]
         return out

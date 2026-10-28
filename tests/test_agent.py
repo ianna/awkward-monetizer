@@ -395,3 +395,17 @@ def test_reference_cache_roundtrip(sqlite_conn, tmp_path, monkeypatch):
     monkeypatch.setattr(ev, "fetch_tables", lambda *a, **k: 1 / 0)  # must not run
     again = reference_answers(sqlite_conn, ["Q2", "Q6"], cache=path)
     np.testing.assert_array_equal(again["Q6"], first["Q6"])
+
+
+def test_projection_covers_p4_helpers(conn):
+    t = AnalysisTools(conn, chunk_events=200)
+    proj = t._projection(check_code("result = ak.num(muons_p4(events), axis=1)"))
+    assert {"pt", "eta", "phi", "mass", "charge"} <= set(proj["muons"])
+    assert "jets" not in proj
+    # every scripted Awkward answer runs on its projection, without the retry
+    from awkward_monetizer.agent.scripted import _AWK
+    for where, code in _AWK.values():
+        tree = check_code(code)
+        p = t._projection(tree)
+        for rng in t.ranges()[:2]:
+            t._run_code(tree, t._chunk(rng, where, p))
