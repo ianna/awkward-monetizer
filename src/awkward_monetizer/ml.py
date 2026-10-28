@@ -148,7 +148,7 @@ def build_model(n_features: int, hidden: int = 64):
                 nn.Linear(hidden, hidden), nn.ReLU(),
                 nn.Linear(hidden, 1))
 
-        def forward(self, x: "torch.Tensor", mask: "torch.Tensor") -> "torch.Tensor":
+        def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
             h = self.phi(x)                          # (B, J, H)
             h = h * mask.unsqueeze(-1)               # zero the padded jets
             pooled = h.sum(dim=1)                    # (B, H), order-invariant
@@ -300,7 +300,7 @@ def train(events: ak.Array, *, epochs: int = 15, batch_size: int = 1024,
         train_loss = running / max(seen, 1)
 
         model.eval()
-        vrun, vseen, se, sse_tot, ysum = 0.0, 0, 0.0, 0.0, 0.0
+        vrun, vseen = 0.0, 0
         preds, trues = [], []
         with torch.no_grad():
             for xb, mb, yb in val_loader:
