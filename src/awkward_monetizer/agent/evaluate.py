@@ -43,7 +43,7 @@ TASKS: dict[str, tuple[str, str]] = {
            "selected event. (There is no b-tag information in this dataset.)")),
     "Q7": ("Q7: HT of cleaned jets",
            ("Histogram, for every event, the scalar sum of the pT of jets with "
-           "pT > 30 GeV and |eta| < 2.4 that are not within Delta-R < 0.4 of "
+           "pT > 30 GeV that are not within Delta-R < 0.4 of "
            "any muon with pT > 10 GeV. Events with no such jet contribute 0. "
            "Submit one value per event (all events).")),
     "Q8": ("Q8: MT(MET, lead lepton)",

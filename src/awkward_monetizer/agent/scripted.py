@@ -34,7 +34,7 @@ best = ak.argmin(abs(p4.mass - TOP_MASS), axis=1, keepdims=True)
 result = ak.flatten(p4.pt[best])"""),
     "Q7": (None, """\
 jets = jets_p4(events)
-jets = jets[(jets.pt > 30) & (abs(jets.eta) < 2.4)]
+jets = jets[jets.pt > 30]
 mu = muons_p4(events)
 mu = mu[mu.pt > 10]
 pair = ak.cartesian({"j": jets, "l": mu}, nested=True)

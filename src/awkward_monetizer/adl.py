@@ -69,9 +69,12 @@ def q6_trijet_pt(events: ak.Array) -> np.ndarray:
 
 
 def q7_ht_cleaned(events: ak.Array) -> np.ndarray:
-    """Scalar sum of pT of jets (pT>30, |eta|<2.4) not within ΔR<0.4 of a muon (pT>10)."""
+    """Scalar sum of pT of jets (pT>30) not within ΔR<0.4 of a muon (pT>10).
+
+    As in the canonical IRIS-HEP ADL Q7 (no |eta| cut on the jets).
+    """
     jets = jets_p4(events)
-    jets = jets[(jets.pt > 30) & (abs(jets.eta) < 2.4)]
+    jets = jets[jets.pt > 30]
     leps = muons_p4(events)
     leps = leps[leps.pt > 10]
 
