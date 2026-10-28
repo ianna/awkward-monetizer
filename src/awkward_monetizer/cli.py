@@ -386,9 +386,18 @@ def _agent_client(args, query: str | None = None):
 
 
 def _cmd_agent(args) -> None:
+    if args.agent_cmd == "questions":
+        from .agent import TASKS
+        for q, (_name, text) in TASKS.items():
+            print(f"{q}: {text}\n")
+        return
+    if args.agent_cmd == "checks":
+        _agent_checks(args)
+        return
     if args.agent_cmd == "mcp":
         from .agent.mcp_server import serve
-        serve(_agent_conn(args, quiet=True))
+        serve(_agent_conn(args, quiet=True), plot_dir=args.plot_dir,
+              check_log=args.check_log or None)
         return
 
     conn = _agent_conn(args)
@@ -397,8 +406,40 @@ def _cmd_agent(args) -> None:
             _agent_ask(args, conn)
         else:
             _agent_eval(args, conn)
+    except Exception as exc:
+        # Model-API failures (no credits, bad key, network): one clear line,
+        # not a traceback through the SDK.
+        if type(exc).__module__.split(".")[0] == "anthropic":
+            msg = getattr(exc, "message", None) or str(exc)
+            body = getattr(exc, "body", None)
+            if isinstance(body, dict):
+                msg = body.get("error", {}).get("message", msg)
+            raise SystemExit(f"API error ({type(exc).__name__}): {msg}") from None
+        raise
     finally:
         conn.close()
+
+
+def _agent_checks(args) -> None:
+    import json
+    import pathlib
+    path = pathlib.Path(args.check_log)
+    if not path.exists():
+        raise SystemExit(f"no check log at {path}")
+    entries = [json.loads(line) for line in path.read_text().splitlines() if line]
+    first: dict[str, dict] = {}
+    last: dict[str, dict] = {}
+    for e in entries:
+        first.setdefault(e["query"], e)
+        last[e["query"]] = e
+    print(f"{'query':5s} {'first':6s} {'final':6s} {'tries':>5s} {'route':8s} detail")
+    for q in sorted(last):
+        f, la = first[q], last[q]
+        print(f"{q:5s} {'PASS' if f['passed'] else 'FAIL':6s} "
+              f"{'PASS' if la['passed'] else 'FAIL':6s} {la['attempt']:5d} "
+              f"{la.get('route', '-')!s:8s} {la['reason']}")
+    n = sum(e["passed"] for e in first.values())
+    print(f"\n{n}/{len(first)} passed on first check ({len(entries)} checks logged)")
 
 
 def _agent_ask(args, conn) -> None:
@@ -414,7 +455,7 @@ def _agent_ask(args, conn) -> None:
     if not question:
         raise SystemExit("give a question (or --replay a transcript)")
     print(f"question: {question}\n")
-    run = run_agent(question, AnalysisTools(conn), client,
+    run = run_agent(question, AnalysisTools(conn, plot_dir=args.plot_dir), client,
                     max_turns=args.max_turns, echo=print)
     print(f"\nstopped: {run.stopped} after {run.turns} turns, {run.wall_s}s, "
           f"{run.usage['input_tokens'] + run.usage['output_tokens']} tokens")
@@ -655,6 +696,8 @@ def build_parser() -> argparse.ArgumentParser:
     aa.add_argument("question", nargs="?", default=None)
     aa.add_argument("--transcript", default=None, metavar="JSON")
     aa.add_argument("--plot", default=None, metavar="PNG")
+    aa.add_argument("--plot-dir", default="output/agent_plots",
+                    help="where the plot_result tool saves PNGs")
     _agent_common(aa)
 
     ae = ags.add_parser("eval", help="score the agent on ADL Q1-Q8")
@@ -667,6 +710,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     am = ags.add_parser("mcp", help="serve the tools over MCP (stdio)")
     _agent_common(am, model=False)
+    am.add_argument("--plot-dir", default="output/agent_plots",
+                    help="where the plot_result tool saves PNGs")
+    am.add_argument("--check-log", default="output/agent_checks.jsonl",
+                    help="JSON-lines log of check_answer results ('' = off)")
+
+    aq = ags.add_parser("questions", help="print the ADL Q1-Q8 task texts")
+    aq.set_defaults(agent_cmd="questions")
+    ac = ags.add_parser("checks", help="tabulate check_answer results from MCP")
+    ac.add_argument("--check-log", default="output/agent_checks.jsonl")
     ag.set_defaults(func=_cmd_agent)
 
     return p

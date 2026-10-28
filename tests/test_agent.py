@@ -226,11 +226,97 @@ def test_cli_agent_eval_scripted(nano_file, capsys, tmp_path):
     assert "stopped: submitted" in out and "answer via awkward" in out
 
 
+# -- plot_result, check_answer, CLI extras ----------------------------------
+_has_mpl = importlib.util.find_spec("matplotlib") is not None
+
+
+@pytest.mark.skipif(not _has_mpl, reason="matplotlib not installed")
+def test_plot_result_writes_png(sqlite_conn, tmp_path):
+    t = AnalysisTools(sqlite_conn, plot_dir=str(tmp_path / "plots"))
+    t.call("awkward_eval", {"code": "result = events.met_pt"})
+    text, err = t.call("plot_result", {"result_id": "r1", "title": "MET",
+                                       "xlabel": "MET [GeV]", "bins": 30})
+    assert not err
+    path = json.loads(text)["path"]
+    assert path.endswith(".png") and (tmp_path / "plots").exists()
+    with open(path, "rb") as fh:
+        assert fh.read(4) == b"\x89PNG"
+    # SQL source and argument validation
+    _, err = t.call("plot_result", {"sql": "SELECT pt FROM jets", "x_range": [0, 200]})
+    assert not err
+    _, err = t.call("plot_result", {"sql": "SELECT pt FROM jets", "x_range": [5, 1]})
+    assert err
+    assert t.trace[-1].engine == "plot"
+
+
+def test_check_answer_scores_and_logs_attempts(sqlite_conn, tmp_path):
+    log = tmp_path / "checks.jsonl"
+    t = AnalysisTools(sqlite_conn, check_log=str(log))
+    _, err = t.call("check_answer", {"query": "Q1"})
+    assert err                                     # nothing submitted yet
+    t.call("submit_answer", {"sql": "SELECT met_pt FROM events WHERE met_pt > 30",
+                             "explanation": "wrong cut"})
+    text, err = t.call("check_answer", {"query": "q1"})
+    assert not err and json.loads(text)["passed"] is False
+    t.call("submit_answer", {"sql": "SELECT met_pt FROM events", "explanation": "MET"})
+    d = json.loads(t.call("check_answer", {"query": "Q1"})[0])
+    assert d["passed"] is True and d["attempt"] == 2
+    _, err = t.call("check_answer", {"query": "Q9"})
+    assert err
+    entries = [json.loads(x) for x in log.read_text().splitlines()]
+    assert [(e["query"], e["passed"], e["attempt"]) for e in entries] == [
+        ("Q1", False, 1), ("Q1", True, 2)]
+
+
+def test_check_answer_not_offered_to_eval_loop():
+    from awkward_monetizer.agent import TOOL_SPECS
+    assert "check_answer" not in {s["name"] for s in TOOL_SPECS}
+
+
+def test_cli_questions_and_checks_table(tmp_path, capsys):
+    main(["agent", "questions"])
+    out = capsys.readouterr().out
+    assert out.count("\nQ") >= 7 and "172.5" in out
+    log = tmp_path / "c.jsonl"
+    rows = [{"query": "Q6", "passed": False, "reason": "n=1", "attempt": 1,
+             "route": "awkward"},
+            {"query": "Q6", "passed": True, "reason": "ok", "attempt": 2,
+             "route": "awkward"},
+            {"query": "Q1", "passed": True, "reason": "ok", "attempt": 1,
+             "route": "sql"}]
+    log.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    main(["agent", "checks", "--check-log", str(log)])
+    out = capsys.readouterr().out
+    assert "1/2 passed on first check" in out
+
+
+def test_cli_reports_api_errors_in_one_line(nano_file, monkeypatch):
+    from awkward_monetizer import cli
+
+    class BadRequestError(Exception):
+        """Stand-in for an anthropic SDK error (same module, body shape)."""
+        def __init__(self):
+            super().__init__("Error code: 400")
+            self.body = {"error": {"message": "Your credit balance is too low"}}
+    BadRequestError.__module__ = "anthropic._exceptions"
+
+    class _Failing:
+        model = "m"
+
+        def create(self, **kw):
+            raise BadRequestError()
+    monkeypatch.setattr(cli, "_agent_client", lambda args, q=None: _Failing())
+    with pytest.raises(SystemExit,
+                       match=r"^API error \(BadRequestError\): Your credit balance"):
+        main(["agent", "ask", "MET", "--from-root", nano_file, "--backend", "sqlite"])
+
+
 @pytest.mark.skipif(not _has_mcp, reason="mcp not installed")
-def test_mcp_server_lists_tools(sqlite_conn):
+def test_mcp_server_lists_all_tools(sqlite_conn):
     import asyncio
 
     from awkward_monetizer.agent.mcp_server import build_server
     server = build_server(AnalysisTools(sqlite_conn))
     names = {t.name for t in asyncio.run(server.list_tools())}
-    assert names == {"describe_schema", "run_sql", "awkward_eval", "submit_answer"}
+    assert names == {"describe_schema", "run_sql", "awkward_eval", "submit_answer",
+                     "plot_result", "check_answer"}

@@ -37,6 +37,8 @@ import json
 import re
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import awkward as ak
@@ -134,7 +136,44 @@ TOOL_SPECS = [
             "required": ["explanation"],
         },
     },
+    {
+        "name": "plot_result",
+        "description": (
+            "Save a histogram (PNG) of a stored result (result_id from "
+            "awkward_eval) or of the first column of a SQL SELECT, and return "
+            "the file path. Use it whenever the user asks for a plot."),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "result_id": {"type": "string"},
+                "sql": {"type": "string"},
+                "title": {"type": "string"},
+                "xlabel": {"type": "string", "description": "axis label with units"},
+                "bins": {"type": "integer", "minimum": 5, "maximum": 200},
+                "x_range": {"type": "array", "items": {"type": "number"},
+                            "minItems": 2, "maxItems": 2},
+            },
+        },
+    },
 ]
+
+# Scoring is offered only to interactive clients (MCP), where a human asks for
+# it after the agent has submitted. The built-in eval scores outside the loop,
+# so this tool is deliberately not in TOOL_SPECS.
+CHECK_SPEC = {
+    "name": "check_answer",
+    "description": (
+        "Score the most recently submitted answer against the IRIS-HEP ADL "
+        "reference for one benchmark query (Q1-Q8). Call it once, after "
+        "submit_answer, and only when the user asks for scoring. Every check is "
+        "logged with its attempt number, so retries are visible."),
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string",
+                                 "enum": [f"Q{i}" for i in range(1, 9)]}},
+        "required": ["query"],
+    },
+}
 
 
 class ToolError(Exception):
@@ -294,9 +333,16 @@ def _jsonable(v):
 class AnalysisTools:
     """Agent-facing tools over one DB-API connection with the nanoaod schema."""
 
-    def __init__(self, conn, *, tables: tuple[str, ...] = ("events",) + COLLECTIONS):
+    def __init__(self, conn, *, tables: tuple[str, ...] = ("events",) + COLLECTIONS,
+                 plot_dir: str = "output/agent_plots",
+                 check_log: str | None = None):
         self.conn = conn
         self.tables = tables
+        self.plot_dir = Path(plot_dir).expanduser().resolve()
+        self.check_log = Path(check_log).expanduser().resolve() if check_log else None
+        self.checks: list[dict] = []
+        self._refs: dict[str, np.ndarray] = {}
+        self._n_plots = 0
         # The tools only read, so run in autocommit: a failed agent query then
         # cannot leave the connection in an aborted transaction (monetdbe does
         # not recover from ROLLBACK cleanly).
@@ -322,6 +368,8 @@ class AnalysisTools:
             "run_sql": (self.run_sql, "sql"),
             "awkward_eval": (self.awkward_eval, "awkward"),
             "submit_answer": (self.submit_answer, "submit"),
+            "plot_result": (self.plot_result, "plot"),
+            "check_answer": (self.check_answer, "check"),
         }.get(name)
         if handler is None:
             text, ok, detail = f"unknown tool {name!r}", False, {}
@@ -458,20 +506,84 @@ class AnalysisTools:
 
     def submit_answer(self, explanation: str, result_id: str | None = None,
                       sql: str | None = None) -> dict:
+        values, route = self._values(result_id, sql)
+        self.answer = values
+        self.answer_info = {"route": route, "result_id": result_id, "sql": sql,
+                            "explanation": explanation}
+        return {"accepted": True, "route": route, "summary": summarize(values),
+                "_summary": f"answer via {route}: n={values.size}"}
+
+    def _values(self, result_id: str | None, sql: str | None):
         if (result_id is None) == (sql is None):
             raise ToolError("give exactly one of result_id or sql")
         if result_id is not None:
             if result_id not in self.results:
                 raise ToolError(f"unknown result_id {result_id!r}; known: "
                                 f"{sorted(self.results)}")
-            values, route = self.results[result_id], "awkward"
-        else:
-            values, route = self.sql_values(sql), "sql"
-        self.answer = values
-        self.answer_info = {"route": route, "result_id": result_id, "sql": sql,
-                            "explanation": explanation}
-        return {"accepted": True, "route": route, "summary": summarize(values),
-                "_summary": f"answer via {route}: n={values.size}"}
+            return self.results[result_id], "awkward"
+        return self.sql_values(sql), "sql"
+
+    def plot_result(self, result_id: str | None = None, sql: str | None = None,
+                    title: str = "", xlabel: str = "", bins: int = 50,
+                    x_range: list | None = None) -> dict:
+        values, route = self._values(result_id, sql)
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except ImportError:
+            raise ToolError("matplotlib is not installed") from None
+        bins = max(5, min(int(bins), 200))
+        rng = None
+        if x_range is not None:
+            if len(x_range) != 2 or not x_range[0] < x_range[1]:
+                raise ToolError("x_range must be [low, high] with low < high")
+            rng = (float(x_range[0]), float(x_range[1]))
+        finite = values[np.isfinite(values)]
+        fig, ax = plt.subplots(figsize=(6.4, 4.4))
+        try:
+            ax.hist(finite, bins=bins, range=rng, histtype="stepfilled",
+                    color="#3b6fb6", alpha=0.85, edgecolor="#26456e")
+            ax.set_xlabel(xlabel or "value")
+            ax.set_ylabel("entries")
+            ax.set_title(title or "awkward-monetizer agent", fontsize=10)
+            ax.text(0.98, 0.95, f"n = {finite.size}\nmean = {finite.mean():.2f}"
+                    if finite.size else "n = 0", transform=ax.transAxes,
+                    ha="right", va="top", fontsize=9)
+            fig.tight_layout()
+            self.plot_dir.mkdir(parents=True, exist_ok=True)
+            self._n_plots += 1
+            slug = re.sub(r"[^a-z0-9]+", "_", (title or "plot").lower()).strip("_")
+            stamp = time.strftime("%H%M%S")
+            path = self.plot_dir / f"{slug[:40] or 'plot'}_{stamp}_{self._n_plots}.png"
+            fig.savefig(path, dpi=120)
+        finally:
+            plt.close(fig)
+        return {"path": str(path), "n": int(values.size), "route": route,
+                "_summary": f"saved {path}"}
+
+    def check_answer(self, query: str) -> dict:
+        from .evaluate import TASKS, compare, reference_answers
+        q = str(query).strip().upper()
+        if q not in TASKS:
+            raise ToolError(f"unknown query {query!r}; one of {list(TASKS)}")
+        if self.answer is None:
+            raise ToolError("no answer submitted yet; call submit_answer first")
+        if q not in self._refs:
+            self._refs.update(reference_answers(self.conn, [q]))
+        passed, reason = compare(self.answer, self._refs[q])
+        attempt = 1 + sum(c["query"] == q for c in self.checks)
+        entry = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 "query": q, "passed": passed, "reason": reason,
+                 "attempt": attempt, **(self.answer_info or {})}
+        self.checks.append(entry)
+        if self.check_log is not None:
+            self.check_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.check_log, "a") as fh:
+                fh.write(json.dumps(entry, default=str) + "\n")
+        return {"query": q, "passed": passed, "reason": reason, "attempt": attempt,
+                "_summary": f"{q} {'PASS' if passed else 'FAIL'} ({reason}), "
+                            f"attempt {attempt}"}
 
     # -- reporting --------------------------------------------------------
     def trace_dicts(self) -> list[dict]:
@@ -480,6 +592,7 @@ class AnalysisTools:
             d = asdict(c)
             d["detail"] = {k: v for k, v in d["detail"].items()
                            if k in ("row_count", "result_id", "events_fetched",
-                                    "fetch_ms", "compute_ms", "where", "route")}
+                                    "fetch_ms", "compute_ms", "where", "route",
+                                    "path", "passed", "attempt")}
             out.append(d)
         return out

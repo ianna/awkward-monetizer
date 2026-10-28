@@ -47,7 +47,9 @@ Delta-R matching, invariant masses, "best candidate per event". Push any \
 event-level cut into its `where` argument so less data leaves the database.
 3. Check intermediate numbers (counts, a few values) before submitting. If a \
 tool returns an error, read it and fix the call.
-4. Finish by calling submit_answer exactly once with one value per histogram \
+4. If asked for a plot, use plot_result (on a result_id or a SQL query) and \
+report the file path.
+5. Finish by calling submit_answer exactly once with one value per histogram \
 entry, and a one-sentence explanation. Energies and momenta are in GeV.
 
 Be concise in text; let the tool calls do the work."""

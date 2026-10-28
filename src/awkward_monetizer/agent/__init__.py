@@ -26,10 +26,10 @@ from .loop import (
     run_agent,
 )
 from .scripted import expert_script
-from .tools import TOOL_SPECS, AnalysisTools, ToolError
+from .tools import CHECK_SPEC, TOOL_SPECS, AnalysisTools, ToolError
 
 __all__ = [
-    "DEFAULT_MODEL", "SYSTEM_PROMPT", "TASKS", "TOOL_SPECS", "AgentRun",
+    "CHECK_SPEC", "DEFAULT_MODEL", "SYSTEM_PROMPT", "TASKS", "TOOL_SPECS", "AgentRun",
     "AnalysisTools", "AnthropicClient", "ModelTurn", "ReplayClient",
     "ScriptedClient", "ToolError", "compare", "evaluate", "expert_script",
     "format_table", "load_demo_db", "reference_answers", "run_agent",

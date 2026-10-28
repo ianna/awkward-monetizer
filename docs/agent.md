@@ -10,6 +10,8 @@ to the engine that our benchmarks say suits it:
 | `run_sql` | MonetDB | read-only SELECT preview: cuts, counts, aggregates, flat selections |
 | `awkward_eval` | MonetDB → Arrow/pandas → Awkward | `where` is pushed into SQL, then agent-written Awkward code does combinatorics, ΔR, masses |
 | `submit_answer` | either | final per-entry values, as a `result_id` or as a SQL query |
+| `plot_result` | matplotlib | histogram PNG of a `result_id` or SQL column; returns the path (default `output/agent_plots/`) |
+| `check_answer` | ADL reference | **MCP only**: score the last submitted answer against Q1–Q8; logged with attempt number |
 
 ```
 question ──► Claude ──tool_use──► AnalysisTools (SQL | Awkward) ──result──┐
@@ -79,8 +81,40 @@ Record the runs the day before a talk, then replay them live.
 claude mcp add awkward-monetizer -- awkward-monetizer agent mcp --database hep_agent
 ```
 
-This exposes the same four tools to Claude Code, Claude Desktop or any MCP
-client.
+This exposes the same tools, plus `check_answer`, to Claude Code, Claude
+Desktop or any MCP client. It runs on a Claude subscription and needs no API
+credits.
+
+### Scoring ADL Q1–Q8 interactively (no API credits)
+
+```bash
+awkward-monetizer agent questions     # copy-paste texts for Q1–Q8
+```
+
+In Claude Code, paste a question and add: *"Use only the awkward-monetizer
+tools. Submit, then call check_answer for Q6."* Each check is appended to
+`output/agent_checks.jsonl` with its attempt number, so retries after a FAIL
+stay visible. Tabulate the session with:
+
+```bash
+awkward-monetizer agent checks        # first-check vs final pass, tries per query
+```
+
+`check_answer` is deliberately not given to the built-in `agent eval` loop,
+which scores outside the agent's reach. In MCP it is a convenience for a human
+driving the session. Report the first-check column, not the final one.
+
+For a clean demo, keep the agent from reading the reference code in this repo:
+register the server for your user and start Claude Code in an empty folder.
+
+```bash
+claude mcp add -s user awkward-monetizer -- \
+  /Users/yana/Projects/Awkward-MonetDB-Marimo/.pixi/envs/default/bin/awkward-monetizer \
+  agent mcp --database hep_agent \
+  --plot-dir /Users/yana/Projects/Awkward-MonetDB-Marimo/output/agent_plots \
+  --check-log /Users/yana/Projects/Awkward-MonetDB-Marimo/output/agent_checks.jsonl
+mkdir -p ~/agent-demo && cd ~/agent-demo && claude
+```
 
 ## Demo script (≈5 min)
 
