@@ -8,6 +8,8 @@ file directly (:func:`tables_from_root`, no database).
 
 from __future__ import annotations
 
+import warnings
+
 import awkward as ak
 import numpy as np
 import pandas as pd
@@ -164,6 +166,251 @@ def fetch_tables(conn, where: str | None = None, collection: str = "muons", *,
         return fetch(ev_sql), fetch(obj_sql)
     finally:
         cur.close()
+
+
+# --------------------------------------------------------------------------
+# NumPy-direct fetch (no pandas)
+# --------------------------------------------------------------------------
+_INT_TYPES = {"tinyint", "smallint", "int", "integer", "bigint", "hugeint",
+              "oid", "serial", "bigserial"}
+_FLOAT_TYPES = {"double", "real", "float", "double precision"}
+_BOOL_TYPES = {"boolean", "bool"}
+
+
+def _np_dtype(type_code):
+    """NumPy dtype for a DB-API type code, or None when unknown (e.g. SQLite)."""
+    t = str(type_code).lower() if type_code is not None else ""
+    if t in _INT_TYPES:
+        return np.dtype(np.int64)
+    if t in _FLOAT_TYPES or t.startswith(("decimal", "numeric")):
+        return np.dtype(np.float64)
+    if t in _BOOL_TYPES:
+        return np.dtype(np.bool_)
+    return None
+
+
+def _column(values, dtype):
+    """One fetched column -> NumPy (or a masked/list Awkward array when it has
+    NULLs or is not numeric), with the same types the pandas path produces."""
+    if dtype is None:
+        probe = np.asarray(values) if len(values) else np.empty(0)
+        if probe.dtype.kind in "biuf":
+            return probe.astype(np.int64 if probe.dtype.kind in "iu" else probe.dtype)
+        if probe.dtype.kind != "O" or all(v is not None for v in values):
+            return ak.Array(list(values))       # strings
+        kinds = {type(v) for v in values if v is not None}
+        if not kinds:                           # all NULL: type unknown
+            return ak.Array(list(values))
+        dtype = (np.dtype(np.bool_) if kinds <= {bool} else
+                 np.dtype(np.int64) if kinds <= {int, bool} else
+                 np.dtype(np.float64) if kinds <= {int, float, bool} else None)
+        if dtype is None:
+            return ak.Array(list(values))
+    if any(v is None for v in values):
+        valid = np.fromiter((v is not None for v in values), bool, len(values))
+        filled = np.array([v if v is not None else 0 for v in values], dtype=dtype)
+        return ak.mask(ak.Array(filled), valid)
+    return np.array(values, dtype=dtype)
+
+
+# MonetDB binary result columns (pymonetdb's ``Xexportbin``): type -> raw dtype
+_BIN_TYPES = {"tinyint": "i1", "smallint": "i2", "int": "i4", "bigint": "i8",
+              "real": "f4", "double": "f8", "float": "f8", "boolean": "i1"}
+BINARY_BATCH = 2_000_000
+
+
+def _decode_binary_block(block, kinds, endian: str) -> list[np.ndarray]:
+    """Split one ``Xexportbin`` reply into raw NumPy columns (no copies).
+
+    Layout, as pymonetdb reads it: column payloads, then a table of
+    (start, length) int64 pairs per column, then the int64 offset of that
+    table; a negative offset points to an error message instead.
+    """
+    order = "<" if endian == "little" else ">"
+    i8 = np.dtype(order + "i8")
+    toc = int(np.frombuffer(block, i8, 1, len(block) - 8)[0])
+    if toc < 0:
+        msg = bytes(block[toc:-8]).split(b"\x00", 1)[0].decode("utf-8", "replace")
+        raise RuntimeError(f"MonetDB binary export failed: {msg}")
+    cols = []
+    for i, code in enumerate(kinds):
+        start, length = np.frombuffer(block, i8, 2, toc + 16 * i)
+        cols.append(np.frombuffer(block, np.dtype(order + code),
+                                  int(length) // np.dtype(code).itemsize, int(start)))
+    return cols
+
+
+def _finish_binary(parts: list[np.ndarray], type_name: str):
+    """Concatenate one column's raw batches; MonetDB NULL sentinels -> None."""
+    raw = np.concatenate(parts) if parts else np.empty(0, _BIN_TYPES[type_name])
+    if type_name == "boolean":
+        valid, out = raw != -128, raw == 1
+    elif raw.dtype.kind == "f":
+        valid, out = ~np.isnan(raw), raw.astype(np.float64)
+    else:
+        valid, out = raw != np.iinfo(raw.dtype).min, raw.astype(np.int64)
+    out = np.ascontiguousarray(out)
+    return out if valid.all() else ak.mask(ak.Array(out), valid)
+
+
+def _fetch_binary(cur, timings) -> dict | None:
+    """pymonetdb fast path: read the executed result with MonetDB's binary
+    export and ``np.frombuffer``, so no Python object is made per value.
+
+    Returns None (use the generic path) unless the cursor is a pymonetdb one
+    with binary support and every column is a fixed-width number or boolean.
+    """
+    conn = getattr(cur, "connection", None)
+    mapi = getattr(conn, "mapi", None)
+    qid = getattr(cur, "_query_id", None)
+    first = getattr(cur, "_rows", None)
+    if (qid is None or mapi is None or first is None
+            or not hasattr(conn, "binary_command")
+            or not getattr(getattr(conn, "_policy", None), "use_binary", lambda: False)()):
+        return None
+    names = [d[0] for d in cur.description]
+    types = [str(d[1]).lower() for d in cur.description]
+    if any(t not in _BIN_TYPES for t in types):
+        return None
+    total = int(cur.rowcount)
+    if total <= len(first):            # everything came with the first reply
+        return None
+    kinds = [_BIN_TYPES[t] for t in types]
+    parts: list[list[np.ndarray]] = [[] for _ in names]
+    for start in range(0, total, BINARY_BATCH):
+        n = min(BINARY_BATCH, total - start)
+        with stage_time(timings, "fetch"):
+            block = conn.binary_command(f"Xexportbin {qid} {start} {n}")
+        with stage_time(timings, "numpy"):
+            for i, col in enumerate(_decode_binary_block(block, kinds,
+                                                         mapi.server_endian)):
+                parts[i].append(col.copy())   # the block buffer is reused
+    with stage_time(timings, "numpy"):
+        return {n: _finish_binary(p, t) for n, p, t in zip(names, parts, types,
+                                                             strict=True)}
+
+
+def _fetch_columns(cur, sql, timings) -> dict:
+    with stage_time(timings, "execute"):
+        cur.execute(sql)
+    try:
+        fast = _fetch_binary(cur, timings)
+    except Exception as exc:  # noqa: BLE001 (any surprise: use the portable path)
+        warnings.warn(f"MonetDB binary fetch failed, using the slow path: {exc!r}",
+                      RuntimeWarning, stacklevel=2)
+        fast = None
+    if fast is not None:
+        return fast
+    names = [d[0] for d in cur.description]
+    dtypes = [_np_dtype(d[1]) for d in cur.description]
+    with stage_time(timings, "fetch"):
+        rows = cur.fetchall()
+    with stage_time(timings, "numpy"):
+        # Column by column, checking for NULLs first: a structured np.array
+        # over the rows would be one pass, but it silently turns NULL into
+        # False (boolean) or NaN (double) instead of a missing value.
+        fast = {}
+        if rows and all(d is not None for d in dtypes):
+            try:   # all-numeric result: one C-level pass into a 2-D float array
+                grid = np.array(rows, dtype=np.float64)
+            except (TypeError, ValueError):
+                grid = None
+            if grid is not None and grid.ndim == 2:
+                for i, (n, d) in enumerate(zip(names, dtypes, strict=True)):
+                    col = grid[:, i]
+                    if np.isnan(col).any():     # NULL (or NaN): exact path below
+                        continue
+                    if d.kind in "iu" and np.abs(col).max(initial=0) >= 2**53:
+                        continue                # beyond float64's exact integers
+                    fast[n] = col.astype(d) if d != np.float64 else col.copy()
+        if len(fast) == len(names):
+            return fast
+        cols = list(zip(*rows, strict=True)) if rows else [()] * len(names)
+        return {n: fast[n] if n in fast else _column(c, d)
+                for n, c, d in zip(names, cols, dtypes, strict=True)}
+
+
+def _take(cols: dict, order) -> dict:
+    return {k: (v[order] if isinstance(v, np.ndarray) else v[ak.Array(order)])
+            for k, v in cols.items()}
+
+
+def fetch_events(conn, where: str | None = None, *,
+                 event_columns: tuple[str, ...] | None = None,
+                 collections: dict[str, tuple[str, ...] | None] | None = None,
+                 event_range: tuple[int, int] | None = None,
+                 timings: dict[str, float] | None = None) -> ak.Array:
+    """Fetch events and their object collections straight into Awkward arrays.
+
+    Same result as :func:`fetch_tables` + :func:`reconstruct_multi` (same
+    fields, types and nesting), but rows go from the DB-API cursor directly into
+    NumPy columns: no pandas DataFrames, no groupby. The events query runs once,
+    whatever the number of collections. ``collections`` maps a collection table
+    to the columns to fetch (None = all; must include ``event_id`` and the
+    ``*_index`` column). Timings: execute, fetch, numpy, array_build.
+    """
+    collections = collections or {}
+
+    def projection(columns, prefix=""):
+        if columns is None:
+            return prefix + "*"
+        if "event_id" not in columns:
+            raise ValueError("projections must include event_id")
+        return ", ".join(prefix + '"' + c.replace('"', '""') + '"' for c in columns)
+
+    span_ev = span_obj = None
+    if event_range is not None:
+        lo, hi = (int(v) for v in event_range)
+        span_ev = f"event_id >= {lo} AND event_id < {hi}"
+        span_obj = f"objects.event_id >= {lo} AND objects.event_id < {hi}"
+    ev_where = " AND ".join(x for x in (span_ev, f"({where})" if where else None) if x)
+    selection = f" WHERE {ev_where}" if ev_where else ""
+
+    cur = conn.cursor()
+    try:
+        ev = _fetch_columns(
+            cur, f"SELECT {projection(event_columns)} FROM events{selection}", timings)
+        objs = {}
+        for coll, cols in collections.items():
+            sql = f"SELECT {projection(cols, 'objects.')} FROM {coll} AS objects"
+            if where:
+                sql += (f" JOIN (SELECT event_id FROM events{selection}) AS selected"
+                        " ON objects.event_id = selected.event_id")
+            if span_obj:
+                sql += f" WHERE {span_obj}"
+            objs[coll] = _fetch_columns(cur, sql, timings)
+    finally:
+        cur.close()
+
+    with stage_time(timings, "array_build"):
+        eid = np.asarray(ev["event_id"], dtype=np.int64)
+        if eid.size > 1 and not np.all(eid[1:] > eid[:-1]):
+            ev = _take(ev, np.argsort(eid, kind="stable"))
+            eid = np.asarray(ev["event_id"], dtype=np.int64)
+        events = ak.zip({c: (ak.Array(v) if isinstance(v, np.ndarray) else v)
+                         for c, v in ev.items()}, depth_limit=1)
+        for coll, cols in objs.items():
+            oid = np.asarray(cols["event_id"], dtype=np.int64)
+            index_cols = [c for c in cols if c.endswith("_index")]
+            if oid.size > 1:
+                keys = [np.asarray(cols[c]) for c in reversed(index_cols)] + [oid]
+                d = np.diff(oid)
+                ordered = d > 0
+                if index_cols:
+                    ordered |= (d == 0) & (np.diff(keys[-2]) > 0)
+                if not np.all(ordered):
+                    cols = _take(cols, np.lexsort(keys))
+                    oid = np.asarray(cols["event_id"], dtype=np.int64)
+            counts = (np.searchsorted(oid, eid, side="right")
+                      - np.searchsorted(oid, eid, side="left"))
+            if counts.sum() != oid.size:
+                raise ValueError(
+                    f"{coll}: {oid.size} rows but counts sum to {counts.sum()} "
+                    "— some objects reference events not in the events table")
+            flat = ak.zip({f: (ak.Array(v) if isinstance(v, np.ndarray) else v)
+                           for f, v in cols.items() if f != "event_id"})
+            events = ak.with_field(events, ak.unflatten(flat, counts), coll)
+    return events
 
 
 def fetch_dimuon_events(conn, where: str | None = None, *,

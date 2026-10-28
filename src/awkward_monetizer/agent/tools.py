@@ -45,7 +45,12 @@ import awkward as ak
 import numpy as np
 
 from ..physics import TOP_MASS, Z_MASS, jets_p4, muons_p4
-from ..reconstruct import fetch_tables, reconstruct_multi
+from ..reconstruct import (
+    _fetch_binary,
+    fetch_events,
+    fetch_tables,
+    reconstruct_multi,
+)
 
 COLLECTIONS = ("jets", "muons")
 PREVIEW_ROWS = 50
@@ -581,31 +586,15 @@ class AnalysisTools:
         return out
 
     def _chunk(self, rng, where, proj) -> ak.Array:
-        evc = proj["events"] if proj else None
-        ev_df = None
-        colls = {}
-        for coll in COLLECTIONS:
-            if proj is not None and coll not in proj:
-                continue
-            e, o = fetch_tables(self.conn, where=where, collection=coll,
-                                event_columns=evc,
-                                object_columns=proj[coll] if proj else None,
-                                event_range=rng)
-            ev_df = e if ev_df is None else ev_df
-            colls[coll] = o
-        if ev_df is None:         # code reads only event-level columns
-            cur = self.conn.cursor()
-            try:
-                span = f"event_id >= {rng[0]} AND event_id < {rng[1]}"
-                w = f"{span} AND ({where})" if where else span
-                cols = ", ".join(f'"{c}"' for c in evc)
-                cur.execute(f"SELECT {cols} FROM events WHERE {w}")
-                import pandas as pd
-                ev_df = pd.DataFrame(cur.fetchall(),
-                                     columns=[d[0] for d in cur.description])
-            finally:
-                cur.close()
-        return reconstruct_multi(ev_df, colls)
+        """One event_id range as nested Awkward arrays, fetched straight into
+        NumPy (no pandas); ``proj`` None means every column."""
+        if proj is None:
+            return fetch_events(self.conn, where, event_range=rng,
+                                collections={c: None for c in COLLECTIONS})
+        return fetch_events(self.conn, where, event_columns=proj["events"],
+                            collections={c: proj[c] for c in COLLECTIONS
+                                         if c in proj},
+                            event_range=rng)
 
     def _events(self, where: str | None) -> ak.Array:
         if where not in self._events_cache:
@@ -679,7 +668,16 @@ class AnalysisTools:
             cur.execute(s)
             if not cur.description:
                 raise ToolError("query returned no columns")
-            values = _fetch_values(cur)
+            try:      # MonetDB binary export straight into NumPy, if possible
+                fast = _fetch_binary(cur, None)
+            except Exception:  # noqa: BLE001 (fall back to the portable path)
+                fast = None
+            if fast is not None:
+                values = next(iter(fast.values()))
+                if not isinstance(values, np.ndarray):   # masked: has NULLs
+                    raise ToolError("first column contains NULL; filter them out")
+            else:
+                values = _fetch_values(cur)
         finally:
             cur.close()
         return to_values(values)

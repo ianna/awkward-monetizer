@@ -409,3 +409,105 @@ def test_projection_covers_p4_helpers(conn):
         p = t._projection(tree)
         for rng in t.ranges()[:2]:
             t._run_code(tree, t._chunk(rng, where, p))
+
+
+@pytest.mark.parametrize("where", [None, "n_jets >= 3"])
+def test_fetch_events_matches_pandas_path(conn, where):
+    import awkward as ak
+
+    from awkward_monetizer.agent.tools import event_ranges
+    from awkward_monetizer.reconstruct import (
+        fetch_events,
+        fetch_tables,
+        reconstruct_multi,
+    )
+    for rng in [None, *event_ranges(conn, 400)[:2]]:
+        ev_df, jets = fetch_tables(conn, where=where, collection="jets",
+                                   event_range=rng)
+        _, muons = fetch_tables(conn, where=where, collection="muons",
+                                event_range=rng)
+        old = reconstruct_multi(ev_df, {"jets": jets, "muons": muons})
+        new = fetch_events(conn, where, event_range=rng,
+                           collections={"jets": None, "muons": None})
+        # same values; MonetDB BOOLEAN trigger flags now arrive as bool
+        # (pandas made them int64), every other field keeps its type
+        assert ak.to_list(new) == ak.to_list(old)
+        for f in ak.fields(old):
+            if not f.startswith("hlt_"):
+                assert str(new[f].type) == str(old[f].type), f
+    # projected: only the named columns, same values
+    proj = fetch_events(conn, where, event_columns=("event_id", "met_pt"),
+                        collections={"jets": ("event_id", "jet_index", "pt")})
+    assert ak.fields(proj) == ["event_id", "met_pt", "jets"]
+    assert ak.array_equal(proj.jets.pt, old.jets.pt if rng is None else
+                          fetch_events(conn, where,
+                                       collections={"jets": None}).jets.pt)
+
+
+def test_fetch_columns_handles_nulls_and_unknown_types():
+    import awkward as ak
+
+    from awkward_monetizer.reconstruct import _column
+    a = _column((1.5, None, 2.0), np.dtype(np.float64))
+    assert ak.to_list(a) == [1.5, None, 2.0]
+    assert _column((1, 2, 3), None).dtype == np.int64
+    assert ak.to_list(_column((True, None), None)) == [True, None]
+    assert ak.to_list(_column((None, None), np.dtype(np.bool_))) == [None, None]
+    assert ak.to_list(_column((None, None), None)) == [None, None]
+    assert ak.to_list(_column(("a", "b"), None)) == ["a", "b"]
+
+
+def test_binary_fast_path_decodes_monetdb_export(monkeypatch):
+    """The pymonetdb fast path, against a fake server speaking the
+    Xexportbin layout (payloads, then (start, length) pairs, then the offset)."""
+    import awkward as ak
+
+    from awkward_monetizer import reconstruct as rc
+    data = {
+        "event_id": np.array([5, 6, 7, 8, 9], "<i8"),
+        "n": np.array([1, -2**31, 3, 4, 5], "<i4"),          # one NULL
+        "pt": np.array([1.5, 2.5, np.nan, 4.5, 5.5], "<f8"),  # NaN = NULL
+        "flag": np.array([1, 0, -128, 1, 0], "i1"),           # one NULL
+    }
+    types = ["bigint", "int", "double", "boolean"]
+
+    def export(start, n):
+        payload, toc = b"", []
+        for col in data.values():
+            raw = col[start:start + n].tobytes()
+            toc.append((len(payload), len(raw)))
+            payload += raw
+        table = np.array(toc, "<i8").tobytes()
+        return memoryview(payload + table + np.array([len(payload)], "<i8").tobytes())
+
+    class Conn:
+        mapi = SimpleNamespace(server_endian="little")
+        _policy = SimpleNamespace(use_binary=lambda: True)
+
+        def binary_command(self, cmd):
+            _, _, start, n = cmd.split()
+            return export(int(start), int(n))
+
+    class Cur:
+        connection = Conn()
+
+        def execute(self, sql):
+            self._query_id = "7"
+            self.rowcount = 5
+            self._rows = [(5, 1, 1.5, True)]        # first reply, text protocol
+            self.description = [(k, t) for k, t in zip(data, types, strict=True)]
+
+        def fetchall(self):
+            raise AssertionError("the fast path must not fall back")
+
+    monkeypatch.setattr(rc, "BINARY_BATCH", 2)       # several export batches
+    cols = rc._fetch_columns(Cur(), "SELECT ...", None)
+    assert cols["event_id"].dtype == np.int64
+    assert cols["event_id"].tolist() == [5, 6, 7, 8, 9]
+    assert ak.to_list(cols["n"]) == [1, None, 3, 4, 5]
+    assert ak.to_list(cols["pt"]) == [1.5, 2.5, None, 4.5, 5.5]
+    assert ak.to_list(cols["flag"]) == [True, False, None, True, False]
+    # an unsupported type (varchar) falls back to the portable path
+    types[1] = "varchar"
+    with pytest.raises(AssertionError, match="must not fall back"):
+        rc._fetch_columns(Cur(), "SELECT ...", None)
