@@ -80,7 +80,9 @@ TOOL_SPECS = [
             "Run one read-only SQL SELECT (or WITH ... SELECT) on MonetDB and "
             f"get the first rows (at most {PREVIEW_ROWS}) plus the row count. "
             "Best for event-level cuts, counts, aggregates and flat per-object "
-            "selections. No DDL/DML, no semicolons."),
+            "selections. For pairs or triplets of objects (self-joins), "
+            "invariant masses or Delta-R, use awkward_eval instead: it is "
+            "faster there. No DDL/DML, no semicolons."),
         "input_schema": {
             "type": "object",
             "properties": {

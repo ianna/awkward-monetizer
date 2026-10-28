@@ -209,7 +209,7 @@ def test_eval_catches_wrong_physics(sqlite_conn):
     rows = evaluate(sqlite_conn, lambda q: ScriptedClient(wrong), queries=["Q4"])
     assert not rows[0].passed
     ok, why = compare(refs["Q4"][::-1].copy(), refs["Q4"])
-    assert ok, why       # order does not matter
+    assert ok and why.startswith(f"all {refs['Q4'].size} values match"), why
 
 
 def test_compare_counts_wrong_values_not_shifted_pairs():
@@ -334,3 +334,5 @@ def test_mcp_server_lists_all_tools(sqlite_conn):
     names = {t.name for t in asyncio.run(server.list_tools())}
     assert names == {"describe_schema", "run_sql", "awkward_eval", "submit_answer",
                      "plot_result", "check_answer"}
+    # the routing rule reaches MCP clients as server instructions
+    assert "combinatorics" in server.instructions and "check_answer" in server.instructions

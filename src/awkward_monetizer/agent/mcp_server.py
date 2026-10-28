@@ -17,16 +17,25 @@ results, including retries, can be tabulated afterwards with
 
 from __future__ import annotations
 
+from .loop import SYSTEM_PROMPT
 from .tools import CHECK_SPEC, TOOL_SPECS, AnalysisTools
 
+# MCP clients never see the built-in loop's system prompt, only these server
+# instructions and the tool descriptions. Without them, an agent driving the
+# tools over MCP has no routing rule and may do combinatorics in SQL.
+MCP_INSTRUCTIONS = SYSTEM_PROMPT + """
 
-def build_server(tools: AnalysisTools):
+check_answer (ADL Q1-Q8 scoring) is for when the user asks for it, after \
+submit_answer; every call is logged with its attempt number."""
+
+
+def build_server(tools: AnalysisTools, instructions: str = MCP_INSTRUCTIONS):
     try:                                   # mcp >= 2
         from mcp.server.mcpserver import MCPServer as Server
     except ImportError:                    # mcp 1.x
         from mcp.server.fastmcp import FastMCP as Server
 
-    mcp = Server("awkward-monetizer")
+    mcp = Server("awkward-monetizer", instructions=instructions)
     desc = {s["name"]: s["description"] for s in [*TOOL_SPECS, CHECK_SPEC]}
 
     def call(name, **kwargs):
