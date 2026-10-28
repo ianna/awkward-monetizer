@@ -68,17 +68,40 @@ def reference_answers(conn, queries=None) -> dict[str, np.ndarray]:
     return out
 
 
+def _n_matched(a: np.ndarray, b: np.ndarray, rtol: float, atol: float) -> int:
+    """Size of the tolerance-matching between two sorted arrays (two pointers).
+
+    Unlike an element-wise comparison of the sorted arrays, one wrong value does
+    not shift every later pair out of alignment, so the count of unmatched
+    values reflects how many values are actually wrong.
+    """
+    i = j = matched = 0
+    while i < a.size and j < b.size:
+        if abs(a[i] - b[j]) <= atol + rtol * abs(b[j]) or (
+                np.isnan(a[i]) and np.isnan(b[j])):
+            matched += 1
+            i += 1
+            j += 1
+        elif a[i] < b[j]:
+            i += 1
+        else:
+            j += 1
+    return matched
+
+
 def compare(got: np.ndarray | None, ref: np.ndarray, *, rtol=1e-6,
             atol=1e-6) -> tuple[bool, str]:
+    """Multiset comparison: same number of entries and every value matched."""
     if got is None:
         return False, "no answer submitted"
     if got.size != ref.size:
         return False, f"n={got.size}, expected {ref.size}"
     a, b = np.sort(got), np.sort(ref)
-    if not np.allclose(a, b, rtol=rtol, atol=atol, equal_nan=True):
-        bad = int(np.sum(~np.isclose(a, b, rtol=rtol, atol=atol, equal_nan=True)))
-        return False, f"{bad}/{ref.size} values differ"
-    return True, f"n={ref.size} match"
+    if np.allclose(a, b, rtol=rtol, atol=atol, equal_nan=True):
+        return True, f"n={ref.size} match"
+    bad = got.size - _n_matched(a, b, rtol, atol)
+    return False, (f"{bad}/{ref.size} submitted values have no match in the "
+                   "reference (multiset comparison, order ignored)")
 
 
 @dataclass

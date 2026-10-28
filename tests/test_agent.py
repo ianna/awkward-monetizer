@@ -212,6 +212,14 @@ def test_eval_catches_wrong_physics(sqlite_conn):
     assert ok, why       # order does not matter
 
 
+def test_compare_counts_wrong_values_not_shifted_pairs():
+    ref = np.arange(1000, dtype=float)
+    got = ref.copy()
+    got[10] = -5.0            # one wrong value shifts the whole sorted order
+    ok, why = compare(got, ref)
+    assert not ok and why.startswith("1/1000 ")
+
+
 def test_cli_agent_eval_scripted(nano_file, capsys, tmp_path):
     main(["agent", "eval", "--scripted", "--from-root", nano_file,
           "--backend", "sqlite", "--queries", "q1,Q6",
