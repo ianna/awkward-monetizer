@@ -1,4 +1,11 @@
-<img alt="awkward-monetizer" src="https://github.com/user-attachments/assets/f338abeb-68f9-4d06-a152-f4467759d9c0" />
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ianna/awkward-monetizer/main/docs/logo/awkward-monetizer-logo-dark.svg">
+    <img alt="awkward-monetizer" src="https://raw.githubusercontent.com/ianna/awkward-monetizer/main/docs/logo/awkward-monetizer-logo.svg" width="640">
+  </picture>
+</p>
+
+<img alt="awkward-monetizer analysis chain" src="https://github.com/user-attachments/assets/f338abeb-68f9-4d06-a152-f4467759d9c0" />
 
 A hybrid data analysis engine that combines:
 
