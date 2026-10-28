@@ -1,0 +1,315 @@
+# Using awkward-monetizer
+
+Details behind the [README](https://github.com/ianna/awkward-monetizer#readme): development setup, datasets, the MonetDB round trip, ingesting real CMS Open Data, parallel ingest and sharding, benchmarks, notebooks and tests. The LLM agent is described in [agent.md](agent.md).
+
+## Development setup
+
+For plotting and notebooks, install the `[notebook]` extra.
+
+For development and the repository's notebooks, clone this repository first.
+Use a virtual environment with pip (this uses released Awkward):
+
+```bash
+git clone https://github.com/ianna/awkward-monetizer.git
+cd awkward-monetizer
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[notebook,dev]"
+```
+
+Alternatively, from the repository root, use **pixi** to build Awkward from a
+local source checkout (see *Awkward from source*):
+
+```bash
+git clone --recursive https://github.com/scikit-hep/awkward.git awkward
+pixi install
+```
+
+The MonetDB **server** is installed separately: `brew install monetdb` on macOS.
+The optional embedded backend (`python -m pip install ".[embedded]"` from a
+checkout) uses `monetdbe`. Its [published wheels](https://pypi.org/project/monetdbe/#files)
+cover Python through 3.10; use Python 3.10 for that extra, or a server backend on
+newer Python versions. A database is not needed for the quickstart below.
+
+For the dimuon example, first provide `data/cms.root` as described in
+[data/README.md](https://github.com/ianna/awkward-monetizer/blob/main/data/README.md):
+
+```bash
+awkward-monetizer ingest data/cms.root --dry-run
+awkward-monetizer reconstruct data/cms.root
+```
+
+With pixi these are tasks: `pixi run ingest-dryrun`, `pixi run reconstruct-demo`,
+`pixi run make-nano`, `pixi run adl`, `pixi run notebook`, `pixi run test`.
+Prefix other commands with `pixi run` when using the pixi environment.
+
+## Datasets
+
+`event_id` is the join key across tables; `*_index` columns preserve each
+object's position so nesting round-trips exactly. Two layouts (`--dataset`):
+
+- **dimuon** (default; `data/cms.root`) — flat CMS dimuon ntuple: one row per
+  event, two muons as parallel columns (`pt1/pt2`, `Q1/Q2`, …), precomputed mass
+  `M`. Un-pivoted into a `muons` table. Schema: `schemas/dimuon.sql`.
+- **nanoaod** — jagged per-event lists (`Jet_pt`, `Muon_pt`, …) exploded into
+  `jets`/`muons`, plus MET. Schema: `schemas/nanoaod.sql`. Matches real CMS
+  NanoAODv9 branch names/types; `event_id` is synthesized (because `event`
+  alone isn't unique in NanoAOD — the key is run+lumi+event, kept as
+  `run`/`lumi`/`event_number` columns).
+
+Synthetic `event_id` is `(file_id << 40) | entry` (`awkward_monetizer.keys`):
+a per-file id plus the event's entry number in that file. It is a plain signed
+BIGINT, independent of chunking and of which worker loads the file, and each
+file owns a contiguous range (`file_id_range`) — ready for range-partitioning
+across MonetDB shards. `file_id` defaults to 0, which gives the original
+`0..N-1` numbering.
+
+## Live MonetDB round-trip
+
+```bash
+brew install monetdb
+monetdbd create ~/hep-dbfarm && monetdbd start ~/hep-dbfarm
+monetdb create hep && monetdb release hep
+awkward-monetizer roundtrip --root-file data/cms.root      # server backend
+```
+
+`roundtrip` ingests, creates the schema, loads (`COPY INTO`), pushes a
+`WHERE mass BETWEEN 60 AND 120` slice to SQL, reconstructs, and checks the
+reconstructed dimuon mass against the stored `M`. `--backend embedded` runs the
+same cycle in-process via `monetdbe` (loads with `INSERT`).
+
+Round-trip mass validation supports only `dimuon`; unsupported datasets are
+rejected before connecting to the database. If the SQL filter selects no events,
+validation reports that it did not run and returns `passed=False`.
+
+## ADL benchmark
+
+`adl.py` implements the eight IRIS-HEP ADL benchmark queries (Q1 MET, Q2/Q3 jet
+pT, Q4 ≥2 jets, Q5 OS dimuon, Q6 trijet, Q7 lepton-cleaned HT, Q8 MT of MET +
+lead lepton) on reconstructed NanoAOD events using `vector`. No real NanoAOD file
+ships here — `make-nano` writes a synthetic one; point `--from-root` at a real
+CMS Open Data NanoAOD file to run on data. Scope: only muons are mapped, so
+Q7/Q8 use muons as leptons; Q6 omits the b-tag term (the `nanoaod` schema does
+not map a b-tag branch yet). Q7 follows the canonical IRIS-HEP definition, with
+no |η| cut on the jets.
+
+## Awkward from source
+
+`pixi.toml` builds Awkward from a local `./awkward` clone (path dependencies:
+`awkward-cpp` compiled, `awkward` editable). Verify with `pixi run check-awkward`: the
+`file:` path should resolve into `./awkward/src/awkward/`. On macOS the source
+build pins `MACOSX_DEPLOYMENT_TARGET` so the compiled wheel matches conda-forge's
+Python; if a build is rejected as `macosx_15_0` incompatible, run
+`MACOSX_DEPLOYMENT_TARGET=11.0 pixi install`.
+
+## Benchmarks
+
+`benchmark.py` compares backends on identical data for the dimuon Z→μμ selection
+(opposite-charge pair, 60–120 GeV):
+
+- **awkward** — pure Awkward (uproot read → reconstruct → analyze in memory)
+- **hybrid** — MonetDB + Awkward: data pre-loaded, the event cut pushed to SQL,
+  survivors reconstructed and finished in Awkward
+- **monetdb** — the *whole* selection in SQL via a `dimuon_mass` user-defined
+  function (`schemas/udf_dimuon.sql`): self-join the two muons per event, compute
+  the mass and filter in-database, return only the surviving masses — no Awkward
+  reconstruction. Runs on a server or embedded `monetdbe`.
+- **rdataframe** — ROOT `RDataFrame` (gated: runs only if `import ROOT` works)
+
+For the dimuon analysis, `--scale K` tiles the input into a K× larger physical
+ROOT file. Query timings report the median of `--repeats`. Setup is reported
+separately, but timing boundaries differ: Awkward setup includes reading and
+reconstruction; database setup excludes the preceding ROOT read and flattening;
+RDataFrame reads the file during its query. Interpret the results with those
+differences in mind. Trijet analysis does not apply `--scale`.
+
+The hybrid benchmark also reports median query-stage times for `execute`,
+`fetch`, `column_arrays`, `sort_group`, `array_build`, and `analysis`, excluding
+warmup. Execute/fetch measure client calls: the driver may receive some rows
+during execute, so these are not isolated server and network timings. Stage
+medians need not sum to the overall median. Hybrid selection uses a SQL join
+and fetches only the event ID and muon fields required for dimuon analysis.
+Typed NumPy conversion bypasses pandas dtype inference and groupby; sorting is
+only performed when the returned rows are not already ordered. Contiguous muon
+columns feed the same Awkward mass calculation. The general-purpose
+`fetch_tables` API still returns pandas DataFrames.
+The ROOT backend books count and mean together to compute both in one event
+loop per query.
+
+```bash
+awkward-monetizer bench --root-file data/cms.root --scale 50 \
+    --backends awkward,hybrid,rdataframe --hybrid-backend server --repeats 5
+```
+
+The backends cross-check on selected-event count and mean mass (the harness prints
+`agreement across backends: OK`). Pushing the physics into the database with the UDF (`monetdb` backend) returns
+only the final selection, so it can beat the fetch-and-reconstruct `hybrid` path
+by a wide margin on this query. The embedded hybrid backend loads via `INSERT`
+(slow); use `--hybrid-backend server` (a real MonetDB server with `COPY INTO`) to
+benchmark a realistic load path.
+
+### Comparing scalar selection and jagged combinatorics
+
+The harness ships two analyses (`--analysis`) with different workloads:
+
+- `zmumu` (flat: two muons/event, a scalar mass): the in-DB `monetdb` backend
+  runs the whole selection in SQL and returns only the selected masses.
+- `trijet` (ADL Q6, jagged: every 3-jet combination, keep the mass closest to
+  172.5 GeV): Awkward uses `ak.combinations`; the SQL equivalent needs two UDFs,
+  a 3-way self-join over jet triples, and a window function.
+
+Relative performance depends on input size, multiplicities, backend, and
+hardware; run the comparison on your data. One example (MacBook Pro, Homebrew
+MonetDB server, median of 5, all backends agreeing on the result):
+
+| Analysis | Events | Awkward (in memory) | hybrid (SQL cut → Awkward) | all in SQL |
+|---|---|---|---|---|
+| `zmumu`, `cms.root` ×20 | 46,080 | 2.1 ms | 35 ms | 6.9 ms |
+| `trijet` (ADL Q6), synthetic | 15,000 | 24 ms | — | 56 ms |
+
+Once data lives in the database, a flat selection is cheapest in SQL (moving
+rows out costs more than the cut), while combinatorics are cheaper in Awkward.
+On very small inputs (800 events) SQL was still ahead for the trijet.
+
+```bash
+awkward-monetizer bench --analysis trijet --root-file data/nano_synth.root \
+    --backends awkward,monetdb --hybrid-backend server
+```
+
+The relational store is the right tool for columnar filtering, materialization,
+and scalar arithmetic; Awkward is the right tool for variable-length
+combinatorics and nested (NF2) physics. The point of the hybrid design is to use
+each where it wins, not to replace one with the other.
+
+## Ingesting real CMS Open Data NanoAOD
+
+The `nanoaod` dataset reads real CMS NanoAODv9 files directly (uproot pulls only
+the branches we map, so a multi-GB file isn't fully read). Get a file — e.g. the
+DoubleMuon sample from the [CMS NanoAOD guide](https://opendata.cern.ch/docs/cms-getting-started-nanoaod) —
+via XRootD and stream it into a running MonetDB `hep` server in chunks:
+
+```bash
+xrdcp root://eospublic.cern.ch//eos/opendata/cms/Run2016H/DoubleMuon/NANOAOD/UL2016_MiniAODv2_NanoAODv9-v1/2510000/127C2975-1B1C-A046-AABF-62B77E757A86.root .
+awkward-monetizer ingest 127C2975-*.root --dataset nanoaod --database hep \
+    --create-schema --step-size "100 MB" --entry-stop 200000
+```
+
+`--step-size` streams with `uproot.iterate`, bounding the input read to a chunk;
+`--create-schema` (re)creates the tables first. Then the `nanoaod` ADL queries
+and benchmarks run on real physics.
+
+`--step-size 50000` sets an entry count instead of a memory size. Add `--dry-run`
+to build and summarize chunks without connecting to MonetDB, or `--truncate`
+to clear the dataset's tables once before loading the chunks.
+
+### Many files / parallel ingest
+
+Give every input file a stable `file_id` with a manifest, then ingest files (or
+entry ranges of one file) independently — in any order, from any number of
+workers — into the same tables without `event_id` collisions:
+
+```bash
+awkward-monetizer manifest data/*.root --out manifest.json --count-entries --tree Events
+# one job per file (run these in parallel)
+awkward-monetizer ingest data/a.root --dataset nanoaod --manifest manifest.json \
+    --step-size "100 MB" --replace
+# or split one big file across two jobs
+awkward-monetizer ingest big.root --dataset nanoaod --file-id 7 --step-size 50000 \
+    --entry-stop 1000000 --replace
+awkward-monetizer ingest big.root --dataset nanoaod --file-id 7 --step-size 50000 \
+    --entry-start 1000000 --replace
+```
+
+Re-running `manifest` on an existing JSON only appends new files; existing ids
+never change. `--replace` deletes just that job's own `event_id` range before
+loading, so a crashed job can be re-run safely; `--truncate` empties the whole
+tables and is for single-writer loads only. Chunks are committed individually.
+
+### Sharding across several MonetDB servers
+
+Because each file owns a contiguous `event_id` range, the tables can be
+range-partitioned by `file_id` over several MonetDB servers so that every event
+and all of its objects live on exactly one shard. Joins, `reconstruct_multi`
+and per-event physics then run locally on each shard, and only results are
+merged (`awkward_monetizer.shards`):
+
+```bash
+awkward-monetizer manifest data/*.root --out manifest.json
+awkward-monetizer shards init --manifest manifest.json --out shards.json \
+    --shard node0:50000/hep --shard node1:50000/hep     # or embedded:/path/db
+awkward-monetizer shards ingest shards.json --manifest manifest.json --create-schema
+awkward-monetizer shards verify shards.json          # ranges + no orphan rows
+awkward-monetizer shards adl shards.json --where "met_pt > 25"
+```
+
+```python
+from awkward_monetizer import ShardMap, fetch_events, map_events, adl
+
+smap = ShardMap.from_json("shards.json")
+events = fetch_events(smap, where="met_pt > 25")      # one ak.Array, event_id order
+q6 = map_events(smap, adl.q6_trijet_pt)              # runs next to each shard
+```
+
+`map_events` merges per-shard results with `shards.combine`: arrays
+concatenate, numbers and `hist` objects add, dicts merge per key. Anything that
+needs all events at once (a global top-k, a normalisation) goes in the
+`reduce=` step. Server shards are queried from a thread pool; embedded monetdbe
+allows one database per process, so embedded shards use a process pool (pass
+module-level functions to `map_events`). The last shard's range is left open,
+so files appended to the manifest always have a home.
+
+### Loading into remote servers
+
+`COPY INTO t FROM '/tmp/x.csv'` makes the *server* open the file, so it only
+works for a server on the same machine. For remote servers the data is streamed
+over the existing connection with `COPY ... ON CLIENT`, straight from memory
+(no temp files on either side). `--load-method` on `ingest` and `shards ingest`:
+
+| method   | how                                                        | use for |
+|----------|------------------------------------------------------------|---------|
+| `copy`   | temp CSV + server-side `COPY INTO`                         | server on this host |
+| `binary` | `COPY LITTLE ENDIAN BINARY ... ON CLIENT`, one array per column | remote servers (fastest; float32 widens to DOUBLE exactly) |
+| `client` | CSV streamed with `COPY ... ON CLIENT`                     | remote servers, any column types |
+| `insert` | DB-API `INSERT`s                                           | embedded monetdbe, other drivers |
+
+`shards ingest` defaults to `auto`: `copy` for `localhost`, `binary` for any
+other host, `insert` for embedded shards. `binary` falls back to `client` for a
+table with non-numeric columns. Requires pymonetdb >= 1.6 and a MonetDB server
+with `ON CLIENT` support (Jan2022 or newer). To check a server:
+
+```bash
+monetdb create hep_test && monetdb release hep_test
+AWKWARD_MONETIZER_TEST_DB=localhost/hep_test pytest tests/test_upload.py
+```
+
+## Marimo notebooks
+
+From a repository checkout with notebook dependencies installed:
+
+```bash
+marimo edit examples/analysis.py    # dimuon notebook; requires data/cms.root
+```
+
+For the ADL dashboard, start the MonetDB `hep` server described above, then load
+the NanoAOD schema and data. `--create-schema` replaces the existing tables:
+
+```bash
+awkward-monetizer make-nano
+awkward-monetizer ingest data/nano_synth.root --dataset nanoaod --create-schema
+marimo edit marimo/dashboard.py
+```
+
+The dashboard offers Q4, Q6, Q7, and Q8. Individual notebooks are in `marimo/`.
+They fetch the tables and reconstruct events in memory; the dashboard does not
+stream the entire analysis in chunks.
+
+## Testing
+
+```bash
+pytest        # or: pixi run test
+```
+
+ADL and CLI tests use generated synthetic data. Dimuon tests need
+`data/cms.root`; embedded database tests also need `monetdbe`. Tests skip when
+their prerequisites are unavailable. CI runs lint and tests on Python 3.10–3.12;
+it does not run a live MonetDB server.
