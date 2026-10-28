@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<img alt="awkward-monetizer analysis chain" src="https://github.com/user-attachments/assets/f338abeb-68f9-4d06-a152-f4467759d9c0" />
+<!--- img alt="awkward-monetizer analysis chain" src="https://github.com/user-attachments/assets/f338abeb-68f9-4d06-a152-f4467759d9c0" / --->
 
 A hybrid data analysis engine that combines:
 
