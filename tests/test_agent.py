@@ -546,6 +546,13 @@ def test_run_server_transports(capsys):
     with pytest.raises(ValueError):
         run_server(s, "sse")
 
+    class Interrupted:
+        def run(self, *a, **k):
+            raise KeyboardInterrupt
+
+    run_server(Interrupted(), "http")          # Ctrl-C: no traceback
+    assert "server stopped" in capsys.readouterr().err
+
 
 @pytest.mark.skipif(not _has_mcp, reason="mcp not installed")
 def test_mcp_server_over_http_lists_and_calls_tools(nano_file):

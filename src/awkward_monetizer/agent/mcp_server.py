@@ -122,11 +122,14 @@ def run_server(server, transport: str = "stdio", *,
     print(f"awkward-monetizer MCP server: http://{host}:{port}/mcp",
           file=sys.stderr, flush=True)
     settings = getattr(server, "settings", None)
-    if settings is not None and hasattr(settings, "port"):   # mcp 1.x FastMCP
-        settings.host, settings.port = host, port
-        server.run(transport="streamable-http")
-    else:                                                     # mcp >= 2
-        server.run("streamable-http", host=host, port=port)
+    try:
+        if settings is not None and hasattr(settings, "port"):   # mcp 1.x
+            settings.host, settings.port = host, port
+            server.run(transport="streamable-http")
+        else:                                                     # mcp >= 2
+            server.run("streamable-http", host=host, port=port)
+    except KeyboardInterrupt:    # Ctrl-C is how an HTTP server is stopped
+        print("awkward-monetizer MCP server stopped", file=sys.stderr)
 
 
 def serve(conn, *, plot_dir: str = "output/agent_plots",
