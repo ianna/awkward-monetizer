@@ -85,6 +85,34 @@ This exposes the same tools, plus `check_answer`, to Claude Code, Claude
 Desktop or any MCP client. It runs on a Claude subscription and needs no API
 credits.
 
+### Over HTTP instead of stdio
+
+By default the client starts the server as a subprocess and talks to it over
+stdio. The server can also run on its own and speak MCP streamable HTTP, so
+several sessions (or a client on the same machine that cannot spawn
+processes) connect to one running server:
+
+```bash
+awkward-monetizer agent mcp --database hep_agent --transport http
+# awkward-monetizer MCP server: http://127.0.0.1:8765/mcp
+claude mcp add --transport http awkward-monetizer http://127.0.0.1:8765/mcp
+```
+
+`--http-host` and `--http-port` change the address. It listens on 127.0.0.1
+(this computer only) by default, on purpose: `awkward_eval` runs agent-written
+Python behind an AST guard, which is not a sandbox, so anyone who can reach
+the port can run code as you. Another address prints a warning; do not expose
+the server beyond a network you trust until the Python tool is sandboxed. All
+clients of one server share its tool state (stored results, the submitted
+answer) and its database connection; tool calls are serialized.
+
+On a large database, `check_answer` first needs the ADL reference answers,
+which take one pass over every event (about 40 minutes for the full 49M-event
+2016H record on a laptop). `agent mcp` therefore saves them to
+`output/refs_DATABASE.npz` by default and reuses them on every later start
+(`--ref-cache` picks another file, `--ref-cache ''` turns it off). At startup
+the server says whether it found the file or will build it on the first check.
+
 ### Scoring ADL Q1–Q8 interactively (no API credits)
 
 ```bash
@@ -131,7 +159,8 @@ mkdir -p ~/agent-demo && cd ~/agent-demo && claude
 
 * `awkward_eval` executes model-written Python in-process. AST checks block
   imports, dunder access and file/exec builtins, but this is **not a security
-  sandbox**. Use it on your own machine and data only.
+  sandbox**. Use it on your own machine and data only; with `--transport
+  http` keep the default 127.0.0.1 address.
 * Scope matches `adl.py`: muons are the only leptons, and there is no b-tag
   (Q6 omits max b-tag).
 * The tools run with autocommit on (they only read), so a failed agent query
