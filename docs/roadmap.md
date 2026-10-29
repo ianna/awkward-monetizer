@@ -20,6 +20,14 @@ exercises jagged muon combinatorics; the `zmumu` (flat ntuple) and `trijet`
 runs the full ingest → SQL slice → reconstruct → validate cycle on both the
 embedded engine and a live Homebrew server. See **Performance findings** below.
 
+Full-record scale (Oct 2026): the whole DoubleMuon Run2016H NanoAODv9 record
+(record 30555: 28 files, 48.9 M events, 245 M jets) streams from EOS over XRootD
+into MonetDB in 22 minutes (`examples/ingest_record.py`), and ADL Q1–Q8
+reproduce the reference exactly on a laptop: 0.7–2.7 s for the SQL queries,
+31 s to under 5 minutes for the Awkward ones, reading MonetDB's binary results
+straight into NumPy. The agent tools (also over MCP's HTTP transport) handle it
+in event-range chunks. See `docs/usage.md`.
+
 ---
 
 ## Phase 1 — Foundations (Weeks 1–2)

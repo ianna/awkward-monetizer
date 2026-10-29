@@ -59,7 +59,9 @@ default).
 
 On 100,000 CMS Open Data events (DoubleMuon Run2016H, record 30555), Claude
 answered all eight ADL questions correctly on the first attempt, doing cuts in
-SQL and combinatorics in Awkward. See
+SQL and combinatorics in Awkward. On the full record, 48.9 million events
+streamed from EOS in 22 minutes, all eight reproduce the reference exactly on a
+laptop, the SQL ones in under 3 s each. See
 [docs/agent.md](https://github.com/ianna/awkward-monetizer/blob/main/docs/agent.md).
 
 ## Documentation

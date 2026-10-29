@@ -1,14 +1,14 @@
 # Agentic analysis: an LLM that routes SQL vs Awkward
 
 `awkward_monetizer.agent` lets an LLM answer HEP analysis questions on the
-hybrid stack. It runs a plain tool-use loop with four tools, and each step goes
+hybrid stack. It runs a plain tool-use loop with six tools, and each step goes
 to the engine that our benchmarks say suits it:
 
 | tool | engine | used for |
 |---|---|---|
 | `describe_schema` | MonetDB catalog | discover tables, columns, types, row counts, units |
 | `run_sql` | MonetDB | read-only SELECT preview: cuts, counts, aggregates, flat selections |
-| `awkward_eval` | MonetDB → Arrow/pandas → Awkward | `where` is pushed into SQL, then agent-written Awkward code does combinatorics, ΔR, masses |
+| `awkward_eval` | MonetDB → NumPy → Awkward | `where` is pushed into SQL, then agent-written Awkward code does combinatorics, ΔR, masses |
 | `submit_answer` | either | final per-entry values, as a `result_id` or as a SQL query |
 | `plot_result` | matplotlib | histogram PNG of a `result_id` or SQL column; returns the path (default `output/agent_plots/`) |
 | `check_answer` | ADL reference | **MCP only**: score the last submitted answer against Q1–Q8; logged with attempt number |
@@ -112,6 +112,30 @@ which take one pass over every event (about 40 minutes for the full 49M-event
 `output/refs_DATABASE.npz` by default and reuses them on every later start
 (`--ref-cache` picks another file, `--ref-cache ''` turns it off). At startup
 the server says whether it found the file or will build it on the first check.
+
+### Large databases
+
+Above `--chunk-events` events (default 1,000,000), `awkward_eval` and the ADL
+reference read MonetDB in `event_id`-range chunks and concatenate the results,
+fetching only the columns the agent's code names. Agent code must therefore
+work event by event (no normalising by global totals); the tool description
+tells the model so. `run_sql` previews without transferring the whole result,
+and SQL answers are read in binary batches.
+
+On the full DoubleMuon Run2016H record (48.9 M events) the scripted baseline
+reproduces all eight ADL answers exactly, in 0.7–2.7 s for Q1–Q4 and 31 s to
+under 5 minutes for Q5–Q8 (`docs/usage.md` has the table). Over MCP, Claude
+Code answered Q1 there correctly on the first attempt.
+
+Two practical points at this size:
+
+* Reference answers take one pass over every event (about 40 minutes for 49 M
+  events). `agent mcp` saves them per database (`output/refs_DATABASE.npz`),
+  and `agent eval` takes `--ref-cache` for the same purpose.
+* An MCP client may give up on a tool call that stays silent too long. Claude
+  Code stopped waiting after 5 minutes, which a full-record Q6
+  (`awkward_eval` alone about 4–5 minutes) can reach: raise the client's MCP
+  tool timeout before running all eight questions at this size.
 
 ### Scoring ADL Q1–Q8 interactively (no API credits)
 
