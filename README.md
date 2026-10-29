@@ -53,6 +53,10 @@ reference. To use it from Claude Code:
 claude mcp add -s user awkward-monetizer -- awkward-monetizer agent mcp --database hep
 ```
 
+It speaks MCP over stdio (started by the client, as above) or HTTP
+(`awkward-monetizer agent mcp --database hep --transport http`, local-only by
+default).
+
 On 100,000 CMS Open Data events (DoubleMuon Run2016H, record 30555), Claude
 answered all eight ADL questions correctly on the first attempt, doing cuts in
 SQL and combinatorics in Awkward. See

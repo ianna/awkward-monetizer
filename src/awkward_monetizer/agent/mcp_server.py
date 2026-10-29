@@ -1,12 +1,24 @@
-"""Expose the analysis tools as an MCP server (stdio).
+"""Expose the analysis tools as an MCP server, over stdio or HTTP.
 
 Lets any MCP client — Claude Code, Claude Desktop, or another agent framework —
 drive the same tools the built-in loop uses::
 
-    awkward-monetizer agent mcp --database hep_agent
+    awkward-monetizer agent mcp --database hep_agent              # stdio
+    awkward-monetizer agent mcp --database hep_agent --transport http
 
-Claude Code: ``claude mcp add awkward-monetizer -- awkward-monetizer agent mcp
---database hep_agent``. Needs ``pip install mcp`` (1.x or 2.x).
+stdio (the default): the client starts the server as a subprocess, e.g.
+``claude mcp add awkward-monetizer -- awkward-monetizer agent mcp --database
+hep_agent``. HTTP (MCP streamable HTTP): the server runs on its own and clients
+connect to ``http://HOST:PORT/mcp``, e.g. ``claude mcp add --transport http
+awkward-monetizer http://127.0.0.1:8765/mcp``. Needs ``pip install mcp`` (1.x or
+2.x).
+
+HTTP listens on 127.0.0.1 by default. ``awkward_eval`` runs agent-written
+Python behind an AST guard, which is *not* a sandbox: anyone who can reach the
+port can run code as this user. Bind to another address only on a network you
+trust, and do not expose the server publicly until the Python tool is properly
+sandboxed. All clients of one HTTP server share its tool state (results, the
+submitted answer) and its database connection; calls are serialized.
 
 Besides the loop's tools, the server offers ``check_answer``: after the agent
 submits, ask it to score the answer against the ADL reference (Q1–Q8). Each
@@ -16,6 +28,10 @@ results, including retries, can be tabulated afterwards with
 """
 
 from __future__ import annotations
+
+import ipaddress
+import sys
+import threading
 
 from .loop import SYSTEM_PROMPT
 from .tools import CHECK_SPEC, CHUNK_EVENTS, TOOL_SPECS, AnalysisTools
@@ -38,8 +54,12 @@ def build_server(tools: AnalysisTools, instructions: str = MCP_INSTRUCTIONS):
     mcp = Server("awkward-monetizer", instructions=instructions)
     desc = {s["name"]: s["description"] for s in [*TOOL_SPECS, CHECK_SPEC]}
 
+    lock = threading.Lock()     # one DB connection: one tool call at a time
+
     def call(name, **kwargs):
-        return tools.call(name, {k: v for k, v in kwargs.items() if v is not None})[0]
+        with lock:
+            return tools.call(name, {k: v for k, v in kwargs.items()
+                                     if v is not None})[0]
 
     @mcp.tool(description=desc["describe_schema"])
     def describe_schema() -> str:
@@ -73,9 +93,49 @@ def build_server(tools: AnalysisTools, instructions: str = MCP_INSTRUCTIONS):
     return mcp
 
 
+TRANSPORTS = ("stdio", "http")
+DEFAULT_HTTP_HOST = "127.0.0.1"
+DEFAULT_HTTP_PORT = 8765
+
+
+def is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def run_server(server, transport: str = "stdio", *,
+               host: str = DEFAULT_HTTP_HOST, port: int = DEFAULT_HTTP_PORT) -> None:
+    """Run a built server over stdio or MCP streamable HTTP (mcp 1.x or 2.x)."""
+    if transport not in TRANSPORTS:
+        raise ValueError(f"transport must be one of {TRANSPORTS}, not {transport!r}")
+    if transport == "stdio":
+        server.run()
+        return
+    if not is_loopback(host):
+        print(f"WARNING: serving on {host}, not only this computer. awkward_eval "
+              "runs agent-written Python with an AST guard, not a sandbox: anyone "
+              "who can reach this port can run code as this user.", file=sys.stderr)
+    print(f"awkward-monetizer MCP server: http://{host}:{port}/mcp",
+          file=sys.stderr, flush=True)
+    settings = getattr(server, "settings", None)
+    if settings is not None and hasattr(settings, "port"):   # mcp 1.x FastMCP
+        settings.host, settings.port = host, port
+        server.run(transport="streamable-http")
+    else:                                                     # mcp >= 2
+        server.run("streamable-http", host=host, port=port)
+
+
 def serve(conn, *, plot_dir: str = "output/agent_plots",
           check_log: str | None = "output/agent_checks.jsonl",
-          chunk_events: int = CHUNK_EVENTS, ref_cache: str | None = None) -> None:
-    build_server(AnalysisTools(conn, plot_dir=plot_dir, check_log=check_log,
-                               chunk_events=chunk_events,
-                               ref_cache=ref_cache)).run()
+          chunk_events: int = CHUNK_EVENTS, ref_cache: str | None = None,
+          transport: str = "stdio", host: str = DEFAULT_HTTP_HOST,
+          port: int = DEFAULT_HTTP_PORT) -> None:
+    server = build_server(AnalysisTools(conn, plot_dir=plot_dir,
+                                        check_log=check_log,
+                                        chunk_events=chunk_events,
+                                        ref_cache=ref_cache))
+    run_server(server, transport, host=host, port=port)

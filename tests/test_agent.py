@@ -511,3 +511,105 @@ def test_binary_fast_path_decodes_monetdb_export(monkeypatch):
     types[1] = "varchar"
     with pytest.raises(AssertionError, match="must not fall back"):
         rc._fetch_columns(Cur(), "SELECT ...", None)
+
+
+# --------------------------------------------------------------------------
+# MCP over HTTP
+# --------------------------------------------------------------------------
+def test_run_server_transports(capsys):
+    from awkward_monetizer.agent.mcp_server import is_loopback, run_server
+
+    class V2:                         # mcp >= 2: run(transport, host=, port=)
+        def run(self, *a, **k):
+            self.got = (a, k)
+
+    class V1:                         # mcp 1.x: host/port live in settings
+        def __init__(self):
+            self.settings = SimpleNamespace(host="0.0.0.0", port=1)
+
+        def run(self, *a, **k):
+            self.got = (a, k, self.settings.host, self.settings.port)
+
+    s = V2()
+    run_server(s)
+    assert s.got == ((), {})
+    run_server(s, "http", port=9001)
+    assert s.got == (("streamable-http",), {"host": "127.0.0.1", "port": 9001})
+    s1 = V1()
+    run_server(s1, "http", host="localhost", port=9002)
+    assert s1.got == ((), {"transport": "streamable-http"}, "localhost", 9002)
+    err = capsys.readouterr().err
+    assert "http://127.0.0.1:9001/mcp" in err and "WARNING" not in err
+    run_server(s, "http", host="0.0.0.0")
+    assert "WARNING" in capsys.readouterr().err
+    assert is_loopback("::1") and not is_loopback("192.168.1.5")
+    with pytest.raises(ValueError):
+        run_server(s, "sse")
+
+
+@pytest.mark.skipif(not _has_mcp, reason="mcp not installed")
+def test_mcp_server_over_http_lists_and_calls_tools(nano_file):
+    import socket
+    import subprocess
+    import sys
+    import time
+    import urllib.request
+
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "awkward_monetizer.cli", "agent", "mcp",
+         "--from-root", nano_file, "--backend", "sqlite", "--check-log", "",
+         "--transport", "http", "--http-port", str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    url = f"http://127.0.0.1:{port}/mcp"
+
+    def rpc(payload, session=None):
+        headers = {"Content-Type": "application/json",
+                   "Accept": "application/json, text/event-stream",
+                   "MCP-Protocol-Version": "2025-06-18"}
+        if session:
+            headers["Mcp-Session-Id"] = session
+        req = urllib.request.Request(url, json.dumps(payload).encode(), headers)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read().decode()
+            sid = r.headers.get("Mcp-Session-Id") or session
+        if not body.strip():
+            return None, sid
+        if body.lstrip().startswith("{"):
+            return json.loads(body), sid
+        data = [ln[5:].strip() for ln in body.splitlines() if ln.startswith("data:")]
+        return json.loads(data[-1]), sid
+
+    try:
+        for _ in range(100):              # wait for the server to listen
+            try:
+                init, sid = rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                 "params": {"protocolVersion": "2025-06-18",
+                                            "capabilities": {},
+                                            "clientInfo": {"name": "t",
+                                                           "version": "0"}}})
+                break
+            except OSError:
+                if proc.poll() is not None:
+                    pytest.fail(proc.stderr.read())
+                time.sleep(0.2)
+        else:
+            pytest.fail("server did not start")
+        assert "routing" in init["result"].get("instructions", "").lower() or \
+            "SQL" in init["result"].get("instructions", "")
+        rpc({"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+        tools, _ = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, sid)
+        names = {t["name"] for t in tools["result"]["tools"]}
+        assert {"describe_schema", "run_sql", "awkward_eval", "submit_answer",
+                "plot_result", "check_answer"} <= names
+        res, _ = rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                      "params": {"name": "run_sql",
+                                 "arguments": {"sql": "SELECT COUNT(*) FROM events"}}},
+                     sid)
+        text = res["result"]["content"][0]["text"]
+        assert json.loads(text)["rows"] == [[1500]], text
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

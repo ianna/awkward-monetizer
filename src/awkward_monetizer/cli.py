@@ -398,7 +398,8 @@ def _cmd_agent(args) -> None:
         from .agent.mcp_server import serve
         serve(_agent_conn(args, quiet=True), plot_dir=args.plot_dir,
               check_log=args.check_log or None,
-              chunk_events=args.chunk_events, ref_cache=args.ref_cache)
+              chunk_events=args.chunk_events, ref_cache=args.ref_cache,
+              transport=args.transport, host=args.http_host, port=args.http_port)
         return
 
     conn = _agent_conn(args)
@@ -721,12 +722,20 @@ def build_parser() -> argparse.ArgumentParser:
                     help="save one transcript per query (replayable)")
     _agent_common(ae)
 
-    am = ags.add_parser("mcp", help="serve the tools over MCP (stdio)")
+    am = ags.add_parser("mcp", help="serve the tools over MCP (stdio or HTTP)")
     _agent_common(am, model=False)
     am.add_argument("--plot-dir", default="output/agent_plots",
                     help="where the plot_result tool saves PNGs")
     am.add_argument("--check-log", default="output/agent_checks.jsonl",
                     help="JSON-lines log of check_answer results ('' = off)")
+    am.add_argument("--transport", choices=("stdio", "http"), default="stdio",
+                    help="stdio: started by the client (default); http: MCP "
+                         "streamable HTTP at http://HTTP_HOST:HTTP_PORT/mcp")
+    am.add_argument("--http-host", default="127.0.0.1",
+                    help="address to listen on with --transport http (default "
+                         "127.0.0.1, this computer only; awkward_eval is not "
+                         "sandboxed, so do not expose it)")
+    am.add_argument("--http-port", type=int, default=8765)
 
     aq = ags.add_parser("questions", help="print the ADL Q1-Q8 task texts")
     aq.set_defaults(agent_cmd="questions")
