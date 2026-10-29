@@ -396,9 +396,15 @@ def _cmd_agent(args) -> None:
         return
     if args.agent_cmd == "mcp":
         from .agent.mcp_server import serve
+        ref_cache = args.ref_cache
+        if ref_cache is None and not args.from_root:
+            # one cache per database by default, so a restart never repeats
+            # the full pass ('' turns it off); it is checked against the
+            # table sizes, so a changed database rebuilds it
+            ref_cache = f"output/refs_{args.database}.npz"
         serve(_agent_conn(args, quiet=True), plot_dir=args.plot_dir,
               check_log=args.check_log or None,
-              chunk_events=args.chunk_events, ref_cache=args.ref_cache,
+              chunk_events=args.chunk_events, ref_cache=ref_cache or None,
               transport=args.transport, host=args.http_host, port=args.http_port)
         return
 
@@ -697,7 +703,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "reference run in event_id chunks of this size")
         sp.add_argument("--ref-cache", default=None, metavar="NPZ",
                         help="cache the ADL reference answers in this file "
-                             "(worth it for large databases)")
+                             "(worth it for large databases; agent mcp "
+                             "defaults to output/refs_DATABASE.npz, '' = off)")
         if model:
             from .agent.loop import DEFAULT_MODEL
             sp.add_argument("--model", default=DEFAULT_MODEL)

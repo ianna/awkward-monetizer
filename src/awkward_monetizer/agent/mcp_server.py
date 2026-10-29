@@ -134,8 +134,28 @@ def serve(conn, *, plot_dir: str = "output/agent_plots",
           chunk_events: int = CHUNK_EVENTS, ref_cache: str | None = None,
           transport: str = "stdio", host: str = DEFAULT_HTTP_HOST,
           port: int = DEFAULT_HTTP_PORT) -> None:
-    server = build_server(AnalysisTools(conn, plot_dir=plot_dir,
-                                        check_log=check_log,
-                                        chunk_events=chunk_events,
-                                        ref_cache=ref_cache))
-    run_server(server, transport, host=host, port=port)
+    tools = AnalysisTools(conn, plot_dir=plot_dir, check_log=check_log,
+                          chunk_events=chunk_events, ref_cache=ref_cache)
+    warn_reference_cost(tools)
+    run_server(build_server(tools), transport, host=host, port=port)
+
+
+def warn_reference_cost(tools: AnalysisTools) -> None:
+    """On a database too big for one pass, tell the user up front whether the
+    first check_answer will read every event to build the ADL reference."""
+    if tools.ranges() is None:          # small: the reference takes seconds
+        return
+    import os
+    cache = tools.ref_cache
+    if cache and os.path.exists(os.path.expanduser(cache)):
+        print(f"ADL reference answers: {cache} (reused if it matches this "
+              "database, rebuilt otherwise)", file=sys.stderr)
+    elif cache:
+        print(f"ADL reference answers: none yet; the first check_answer reads "
+              f"every event to build them (can take tens of minutes) and saves "
+              f"them to {cache}", file=sys.stderr)
+    else:
+        print("WARNING: no --ref-cache. On this database every server start's "
+              "first check_answer reads every event to build the ADL reference "
+              "answers (can take tens of minutes). Pass --ref-cache FILE.npz to "
+              "build them once and reuse them.", file=sys.stderr)

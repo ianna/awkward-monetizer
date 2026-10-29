@@ -613,3 +613,19 @@ def test_mcp_server_over_http_lists_and_calls_tools(nano_file):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_mcp_warns_about_reference_cost(sqlite_conn, tmp_path, capsys):
+    from awkward_monetizer.agent.mcp_server import warn_reference_cost
+    warn_reference_cost(AnalysisTools(sqlite_conn))          # small: silent
+    assert capsys.readouterr().err == ""
+    warn_reference_cost(AnalysisTools(sqlite_conn, chunk_events=200))
+    assert "WARNING: no --ref-cache" in capsys.readouterr().err
+    cache = tmp_path / "refs.npz"
+    warn_reference_cost(AnalysisTools(sqlite_conn, chunk_events=200,
+                                      ref_cache=str(cache)))
+    assert "none yet" in capsys.readouterr().err
+    reference_answers(sqlite_conn, cache=str(cache))
+    warn_reference_cost(AnalysisTools(sqlite_conn, chunk_events=200,
+                                      ref_cache=str(cache)))
+    assert "reused if it matches" in capsys.readouterr().err

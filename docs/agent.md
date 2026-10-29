@@ -106,6 +106,13 @@ the server beyond a network you trust until the Python tool is sandboxed. All
 clients of one server share its tool state (stored results, the submitted
 answer) and its database connection; tool calls are serialized.
 
+On a large database, `check_answer` first needs the ADL reference answers,
+which take one pass over every event (about 40 minutes for the full 49M-event
+2016H record on a laptop). `agent mcp` therefore saves them to
+`output/refs_DATABASE.npz` by default and reuses them on every later start
+(`--ref-cache` picks another file, `--ref-cache ''` turns it off). At startup
+the server says whether it found the file or will build it on the first check.
+
 ### Scoring ADL Q1–Q8 interactively (no API credits)
 
 ```bash
