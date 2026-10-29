@@ -28,6 +28,12 @@ reproduce the reference exactly on a laptop: 0.7–2.7 s for the SQL queries,
 straight into NumPy. The agent tools (also over MCP's HTTP transport) handle it
 in event-range chunks. See `docs/usage.md`.
 
+Open next step for anyone who wants it: object-level SQL cuts in
+`awkward_eval` ([#13](https://github.com/ianna/awkward-monetizer/issues/13)).
+Today `where` only drops whole events, so ADL Q7, which needs every event but
+only jets with pT > 30 GeV and muons with pT > 10 GeV, transfers all 245 M jets
+and 108 M muons: 20 s of its 55 s is moving data, 14 s is physics.
+
 ---
 
 ## Phase 1 — Foundations (Weeks 1–2)
