@@ -141,6 +141,34 @@ awkward-monetizer bench --root-file data/cms.root --scale 50 \
     --backends awkward,hybrid,rdataframe --hybrid-backend server --repeats 5
 ```
 
+### ADL Q1–Q8 on the full 2016H record
+
+`examples/time_breakdown.py` runs the ADL queries the way the agent's tools do
+and splits each into MonetDB query time, moving data into NumPy and Awkward,
+and the physics code. On the full record above (MacBook Pro, local MonetDB
+server), with every value delivered to Python:
+
+| query | engine | values | time |
+|---|---|---|---|
+| Q1 MET, all events | SQL | 48.9 M | 0.7 s |
+| Q2 jet pT, all jets | SQL | 244.6 M | 2.7 s |
+| Q3 jet pT, \|η\| < 1 | SQL | 81.2 M | 2.3 s |
+| Q4 MET, ≥ 2 jets > 40 GeV | SQL | 26.4 M | 2.6 s |
+| Q5 MET, OS μμ 60–120 GeV | Awkward | 9.5 M | 31 s |
+| Q6 trijet pT | Awkward | 42.6 M | 283 s (246 s physics) |
+| Q7 HT of cleaned jets | Awkward | 48.9 M | 55 s |
+| Q8 MT, third muon | Awkward | 12.4 M | 31 s |
+
+All eight reproduce the ADL reference exactly (`agent eval --scripted
+--database hep2016h --ref-cache output/refs_hep2016h.npz`). Results reach Python
+through MonetDB's binary result format read with `np.frombuffer`
+(`reconstruct.fetch_events`), with no Python object per value. The first
+version, through Python rows and pandas, took 4.4–21 s for Q1–Q4 and 54–390 s
+for Q5–Q8. What remains is MonetDB finding each chunk's rows and, for Q6, the
+trijet search itself.
+
+### Dimuon cross-check
+
 The backends cross-check on selected-event count and mean mass (the harness prints
 `agreement across backends: OK`). Pushing the physics into the database with the UDF (`monetdb` backend) returns
 only the final selection, so it can beat the fetch-and-reconstruct `hybrid` path
@@ -205,12 +233,12 @@ to clear the dataset's tables once before loading the chunks.
 ### Many files / parallel ingest
 
 Give every input file a stable `file_id` with a manifest, then ingest files (or
-entry ranges of one file) independently — in any order, from any number of
-workers — into the same tables without `event_id` collisions:
+entry ranges of one file) independently, in any order, into the same tables
+without `event_id` collisions:
 
 ```bash
 awkward-monetizer manifest data/*.root --out manifest.json --count-entries --tree Events
-# one job per file (run these in parallel)
+# one job per file (one after another into the same server)
 awkward-monetizer ingest data/a.root --dataset nanoaod --manifest manifest.json \
     --step-size "100 MB" --replace
 # or split one big file across two jobs
@@ -223,7 +251,39 @@ awkward-monetizer ingest big.root --dataset nanoaod --file-id 7 --step-size 5000
 Re-running `manifest` on an existing JSON only appends new files; existing ids
 never change. `--replace` deletes just that job's own `event_id` range before
 loading, so a crashed job can be re-run safely; `--truncate` empties the whole
-tables and is for single-writer loads only. Chunks are committed individually.
+tables and is for single-writer loads only.
+
+Each job is one transaction, committed at the end. MonetDB uses optimistic
+concurrency: when several jobs write the same tables at once, the first to
+commit wins and the others are aborted at COMMIT ("transaction is aborted
+because of concurrency conflicts"), losing their work. Run jobs into one server
+one after another; for parallel loading, give each worker its own server (see
+sharding below).
+
+### A whole Open Data record
+
+`examples/ingest_record.py` streams every file of a record straight from EOS
+over XRootD (no local copies), one file at a time, with a stable manifest, a
+JSON-lines log that makes it resumable, and a free-disk guard. Reading `root://`
+URLs needs `fsspec-xrootd` and the XRootD bindings (both in the pixi
+environment); `https://` URLs work without them, more slowly.
+
+```bash
+pip install cernopendata-client
+cernopendata-client get-file-locations --recid 30555 --protocol xrootd > data/2016H_files.txt
+monetdb create hep2016h && monetdb release hep2016h
+python examples/ingest_record.py data/2016H_files.txt --database hep2016h --create-schema
+```
+
+Interrupted? Run the same command without `--create-schema`: files already
+logged as done are skipped, and `--replace` makes a half-loaded file safe to
+redo. `data/2016H_files.txt` and `data/2016H_files_manifest.json` for record
+30555 are in the repository, so a re-load reproduces the same `event_id`s.
+
+For the full DoubleMuon Run2016H NanoAODv9 record (28 files, 48,912,812
+events, 244,637,467 jets, 108,427,025 muons) this took 22 minutes on a MacBook
+Pro with a local MonetDB server, about 37,000 events per second, and about
+19 GB of disk (0.4 KB per event).
 
 ### Sharding across several MonetDB servers
 
