@@ -182,9 +182,12 @@ mkdir -p ~/agent-demo && cd ~/agent-demo && claude
 ## Caveats
 
 * `awkward_eval` executes model-written Python in-process. AST checks block
-  imports, dunder access and file/exec builtins, but this is **not a security
-  sandbox**. Use it on your own machine and data only; with `--transport
-  http` keep the default 127.0.0.1 address.
+  imports, dunder access, file/exec builtins and the numpy/Awkward functions
+  that read or write files (`np.load`, `np.save`, `ak.to_parquet`, ...), but
+  this is **not a security sandbox**: it limits neither memory nor CPU, and
+  Python has indirect routes no syntax check can close. Use it on your own
+  machine and data only; with `--transport http` keep the default 127.0.0.1
+  address.
 * Scope matches `adl.py`: muons are the only leptons, and there is no b-tag
   (Q6 omits max b-tag).
 * The tools run with autocommit on (they only read), so a failed agent query
