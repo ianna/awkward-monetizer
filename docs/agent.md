@@ -10,7 +10,7 @@ to the engine that our benchmarks say suits it:
 | `run_sql` | MonetDB | read-only SELECT preview: cuts, counts, aggregates, flat selections |
 | `awkward_eval` | MonetDB → NumPy → Awkward | `where` is pushed into SQL, then agent-written Awkward code does combinatorics, ΔR, masses |
 | `submit_answer` | either | final per-entry values, as a `result_id` or as a SQL query |
-| `plot_result` | matplotlib | histogram PNG of a `result_id` or SQL column; returns the path (default `output/agent_plots/`) |
+| `plot_result` | matplotlib | histogram PNG of a `result_id` or SQL column; returns the path (default `output/agent_plots/`). Without `x_range` the axis spans the minimum to the 99.5th percentile and the plot reports the count outside |
 | `check_answer` | ADL reference | **MCP only**: score the last submitted answer against Q1–Q8; logged with attempt number |
 
 ```
@@ -193,7 +193,9 @@ claude mcp add --transport http awkward-monetizer-http http://127.0.0.1:8765/mcp
 
 - **Live scoreboard** refreshes every 2 s from the check log: Q1–Q8 with the
   first and latest check, attempts and route, the first-check score, and the
-  agent's latest plot.
+  agent's latest plot from this session.
+- **Plots** shows every agent plot made since the notebook started, newest
+  first, with file name and time; a toggle shows all plots in the plot folder.
 - **Replay (no agent)** runs the reference solution for one question through
   the same tools, with no model and no network: the tool trace with engines
   and times, the histogram and the `check_answer` result. It is the fallback
