@@ -67,5 +67,6 @@ agent-db = "awkward-monetizer ingest data/nano_bench.root --dataset nanoaod --da
 agent-baseline = "awkward-monetizer agent eval --scripted --database hep_agent"
 agent-eval = "awkward-monetizer agent eval --database hep_agent --transcripts output/agent_runs"
 agent-mcp = "awkward-monetizer agent mcp --database hep_agent"
+agent-demo = "marimo run marimo/agent_demo.py"
 # Energy / carbon footprint per workflow stage (macOS: run `sudo -v` first)
 carbon = "python examples/carbon_workflow.py --shards shards.json --manifest manifest.json --pdf"
