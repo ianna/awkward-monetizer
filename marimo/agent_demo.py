@@ -9,6 +9,7 @@ def _():
     import json
     import os
     import pathlib
+    import time
 
     import marimo as mo
     import matplotlib.pyplot as plt
@@ -24,8 +25,9 @@ def _():
         run_agent,
     )
 
+    started = time.time()   # the Plots tab shows plots made after this
     return (AnalysisTools, ScriptedClient, TASKS, db, expert_script, json,
-            load_demo_db, mo, np, os, pathlib, plt, run_agent)
+            load_demo_db, mo, np, os, pathlib, plt, run_agent, started, time)
 
 
 @app.cell
@@ -192,8 +194,37 @@ def _(mo, question, run):
 
 
 @app.cell
-def _(mo, replay_controls, replay_result, scoreboard_view):
+def _(mo):
+    plots_scope = mo.ui.radio(options=["this session", "all"], value="this session",
+                              label="show plots from", inline=True)
+    return (plots_scope,)
+
+
+@app.cell
+def _(mo, os, pathlib, plot_dir, plots_scope, refresh, started, time):
+    refresh.value  # re-run on every tick, like the scoreboard
+    _since = started if plots_scope.value == "this session" else 0.0
+    _pngs = sorted((p for p in pathlib.Path(plot_dir.value).expanduser().glob("*.png")
+                    if os.path.getmtime(p) >= _since),
+                   key=os.path.getmtime, reverse=True)
+    _cards = [mo.vstack([
+        mo.image(src=str(p), width=420),
+        mo.md(f"`{p.name}` · {time.strftime('%H:%M:%S', time.localtime(os.path.getmtime(p)))}"),
+    ]) for p in _pngs]
+    plots_view = mo.vstack([
+        mo.hstack([mo.md(f"**{len(_pngs)}** agent plot(s), newest first"),
+                   plots_scope], justify="space-between"),
+        mo.hstack(_cards, wrap=True, justify="start", gap=1.5) if _cards
+        else mo.md("_No agent plots yet. They appear here as the agent calls "
+                   "plot_result._"),
+    ])
+    return (plots_view,)
+
+
+@app.cell
+def _(mo, plots_view, replay_controls, replay_result, scoreboard_view):
     mo.ui.tabs({"Live scoreboard": scoreboard_view,
+                "Plots": plots_view,
                 "Replay (no agent)": mo.vstack([replay_controls, replay_result])})
     return
 
