@@ -436,8 +436,12 @@ class AnalysisTools:
                  plot_dir: str = "output/agent_plots",
                  check_log: str | None = None,
                  chunk_events: int = CHUNK_EVENTS,
-                 ref_cache: str | None = None):
+                 ref_cache: str | None = None,
+                 allow_code: bool = True):
         self.conn = conn
+        # False: awkward_eval refuses to run agent-written code (the only
+        # place this package executes code it was given)
+        self.allow_code = bool(allow_code)
         self.chunk_events = int(chunk_events)
         self.ref_cache = ref_cache
         self._ranges: list | None = None
@@ -638,6 +642,9 @@ class AnalysisTools:
         return to_values(scope["result"])
 
     def awkward_eval(self, code: str, where: str | None = None) -> dict:
+        if not self.allow_code:
+            raise ToolError("awkward_eval is disabled on this server; answer "
+                            "with run_sql and submit_answer(sql=...)")
         tree = check_code(code)
         w = check_where(where)
         ranges = self.ranges()
