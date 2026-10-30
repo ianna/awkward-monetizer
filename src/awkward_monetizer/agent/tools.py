@@ -171,7 +171,10 @@ TOOL_SPECS = [
                 "xlabel": {"type": "string", "description": "axis label with units"},
                 "bins": {"type": "integer", "minimum": 5, "maximum": 200},
                 "x_range": {"type": "array", "items": {"type": "number"},
-                            "minItems": 2, "maxItems": 2},
+                            "minItems": 2, "maxItems": 2,
+                            "description": "[low, high]; default: minimum to the "
+                                           "99.5th percentile, with the count "
+                                           "outside shown on the plot"},
             },
         },
     },
@@ -749,6 +752,14 @@ class AnalysisTools:
                 raise ToolError("x_range must be [low, high] with low < high")
             rng = (float(x_range[0]), float(x_range[1]))
         finite = values[np.isfinite(values)]
+        if rng is None and finite.size:
+            # a few extreme values (e.g. unfiltered MET near 1 TeV) would
+            # otherwise squeeze the whole distribution into the first bins
+            lo, hi = float(finite.min()), float(np.percentile(finite, 99.5))
+            if hi > lo:
+                rng = (lo, hi)
+        outside = (int(np.count_nonzero((finite < rng[0]) | (finite > rng[1])))
+                   if rng is not None else 0)
         fig, ax = plt.subplots(figsize=(6.4, 4.4))
         try:
             ax.hist(finite, bins=bins, range=rng, histtype="stepfilled",
@@ -756,8 +767,11 @@ class AnalysisTools:
             ax.set_xlabel(xlabel or "value")
             ax.set_ylabel("entries")
             ax.set_title(title or "awkward-monetizer agent", fontsize=10)
-            ax.text(0.98, 0.95, f"n = {finite.size}\nmean = {finite.mean():.2f}"
-                    if finite.size else "n = 0", transform=ax.transAxes,
+            label = (f"n = {finite.size}\nmean = {finite.mean():.2f}"
+                     if finite.size else "n = 0")
+            if outside:
+                label += f"\noutside range = {outside}"
+            ax.text(0.98, 0.95, label, transform=ax.transAxes,
                     ha="right", va="top", fontsize=9)
             fig.tight_layout()
             self.plot_dir.mkdir(parents=True, exist_ok=True)
