@@ -179,6 +179,31 @@ mkdir -p ~/agent-demo && cd ~/agent-demo && claude
    pass/fail, the route chosen, the turns and the tokens.
 4. Close with the MCP line: any agent framework gets the same tools.
 
+### Live scoreboard in marimo
+
+`marimo/agent_demo.py` puts a verified score next to a live agent session.
+Run the MCP server over HTTP with its own check log, open the notebook as an
+app, and drive the agent from Claude Code in another window:
+
+```bash
+awkward-monetizer agent mcp --database hep_real --transport http --check-log output/agent_checks_demo.jsonl
+marimo run marimo/agent_demo.py        # or: pixi run agent-demo
+claude mcp add --transport http awkward-monetizer-http http://127.0.0.1:8765/mcp
+```
+
+- **Live scoreboard** refreshes every 2 s from the check log: Q1–Q8 with the
+  first and latest check, attempts and route, the first-check score, and the
+  agent's latest plot.
+- **Replay (no agent)** runs the reference solution for one question through
+  the same tools, with no model and no network: the tool trace with engines
+  and times, the histogram and the `check_answer` result. It is the fallback
+  if the network fails. A `.root` file in the database box loads it into an
+  in-memory database instead of MonetDB.
+
+marimo's chat panel cannot connect to custom MCP servers yet, so the agent
+runs in Claude Code (or any MCP client) and the notebook only watches. Clear
+the demo check log before a talk so attempts start at 1.
+
 ## Caveats
 
 * `awkward_eval` executes model-written Python in-process. AST checks block
