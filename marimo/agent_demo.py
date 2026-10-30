@@ -65,7 +65,7 @@ def _(mo):
 
 
 @app.cell
-def _(TASKS, check_log, json, mo, os, pathlib, plot_dir, refresh):
+def _(TASKS, check_log, json, mo, os, pathlib, plot_dir, refresh, started):
     refresh.value  # re-run on every tick
 
     def _read_checks(path):
@@ -101,7 +101,9 @@ def _(TASKS, check_log, json, mo, os, pathlib, plot_dir, refresh):
         })
     _checked = sum(r["attempts"] > 0 for r in _rows)
 
-    _pngs = sorted(pathlib.Path(plot_dir.value).expanduser().glob("*.png"),
+    # only plots made since the notebook started, so a fresh run starts empty
+    _pngs = sorted((p for p in pathlib.Path(plot_dir.value).expanduser().glob("*.png")
+                    if os.path.getmtime(p) >= started),
                    key=os.path.getmtime)
     _plot = (mo.vstack([mo.md(f"Latest agent plot: `{_pngs[-1].name}`"),
                         mo.image(src=str(_pngs[-1]), width=560)])
