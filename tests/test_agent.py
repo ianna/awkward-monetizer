@@ -636,3 +636,31 @@ def test_mcp_warns_about_reference_cost(sqlite_conn, tmp_path, capsys):
     warn_reference_cost(AnalysisTools(sqlite_conn, chunk_events=200,
                                       ref_cache=str(cache)))
     assert "reused if it matches" in capsys.readouterr().err
+
+
+
+@pytest.mark.parametrize("code", [
+    "result = np.load('x.npy')",
+    "np.save('x.npy', events.met_pt)\nresult = events.met_pt",
+    "result = np.loadtxt('/etc/passwd', dtype=str)",
+    "ak.to_parquet(events, 'x.parquet')\nresult = events.met_pt",
+    "result = ak.from_parquet('x.parquet').met_pt",
+    "f = np.save\nresult = events.met_pt",
+    "ak.to_numpy(events.met_pt).tofile('x')\nresult = events.met_pt",
+    "result = np.lib.npyio.load('x')",
+    "result = np.memmap('x')",
+])
+def test_check_code_rejects_file_io(code):
+    with pytest.raises(ToolError, match="reads or writes files"):
+        check_code(code)
+
+
+def test_file_io_guard_keeps_array_code(sqlite_conn):
+    from awkward_monetizer.agent.scripted import _AWK
+    for _where, code in _AWK.values():          # the reference solutions pass
+        check_code(code)
+    t = AnalysisTools(sqlite_conn)
+    out, err = t.call("awkward_eval", {"code": (
+        "pt = ak.flatten(events.jets.pt)\n"
+        "result = np.sqrt(ak.to_numpy(pt)) + np.log1p(np.abs(np.sin(1.0)))")})
+    assert not err, out

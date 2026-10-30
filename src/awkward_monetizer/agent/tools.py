@@ -24,8 +24,9 @@ Every call is recorded in :attr:`AnalysisTools.trace` with its engine and
 wall time, so a run can be shown as "which engine did what, and how long".
 
 ``awkward_eval`` runs agent-written code in-process. The AST checks below block
-imports, dunder access and file/exec builtins, which keeps an honest model on
-the rails, but it is *not* a security sandbox: use it on your own machine and
+imports, dunder access, file/exec builtins and the numpy/Awkward functions that
+read or write files, which keeps an honest model on the rails, but it is *not*
+a security sandbox: use it on your own machine and
 data, never as a service exposed to untrusted users.
 """
 
@@ -119,7 +120,8 @@ TOOL_SPECS = [
             "jets_p4(events) and muons_p4(events) (scikit-hep vector Momentum4D "
             "arrays with .mass .pt .deltaR(), addable with +), Z_MASS, TOP_MASS. "
             "The code must assign a 1-D numeric array (one value per histogram "
-            "entry, no None) to a variable named `result`. No imports. On a "
+            "entry, no None) to a variable named `result`. No imports and no file "
+            "I/O (np.load/np.save, ak.to_parquet and similar are rejected). On a "
             "large database the code runs on consecutive chunks of events and "
             "the results are concatenated, so compute event by event (no "
             "normalising by global totals). Returns a summary and a result_id "
@@ -263,6 +265,24 @@ _SAFE_BUILTINS = {
 }
 
 
+# numpy and Awkward functions (and ndarray methods) that read or write files,
+# or open a route to native code. The agent's code gets np and ak in scope, so
+# blocking Python's own open/import is not enough: np.load, np.save or
+# ak.to_parquet would reach the file system. Matched by attribute name, so an
+# alias (f = np.save) is caught too. Still a guard, not a sandbox.
+_FILE_IO_ATTRS = frozenset({
+    # numpy
+    "load", "save", "savez", "savez_compressed", "loadtxt", "savetxt",
+    "genfromtxt", "fromfile", "fromregex", "tofile", "dump", "memmap",
+    "DataSource", "lib", "ctypeslib", "f2py", "distutils",
+    # awkward
+    "from_parquet", "to_parquet", "to_parquet_dataset", "to_parquet_row_groups",
+    "metadata_from_parquet", "from_feather", "to_feather", "from_json",
+    "to_json", "from_avro_file", "from_rdataframe", "to_rdataframe",
+    "from_safetensors", "to_safetensors",
+})
+
+
 def check_code(code: str) -> ast.Module:
     try:
         tree = ast.parse(code, mode="exec")
@@ -278,6 +298,10 @@ def check_code(code: str) -> ast.Module:
             raise ToolError(f"{type(node).__name__} statements are not allowed")
         if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
             raise ToolError(f"private attribute {node.attr!r} is not allowed")
+        if isinstance(node, ast.Attribute) and node.attr in _FILE_IO_ATTRS:
+            raise ToolError(f"{node.attr!r} reads or writes files, which is not "
+                            "allowed; work on `events` and return `result` (use "
+                            "plot_result for plots)")
         if isinstance(node, ast.Name) and node.id.startswith("__"):
             raise ToolError(f"name {node.id!r} is not allowed")
     if not any(isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign))
