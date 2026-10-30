@@ -187,7 +187,8 @@ mkdir -p ~/agent-demo && cd ~/agent-demo && claude
   this is **not a security sandbox**: it limits neither memory nor CPU, and
   Python has indirect routes no syntax check can close. Use it on your own
   machine and data only; with `--transport http` keep the default 127.0.0.1
-  address.
+  address. `agent mcp --no-code-tool` leaves `awkward_eval` out entirely
+  (SQL, plots and checks only). See [SECURITY.md](../SECURITY.md).
 * Scope matches `adl.py`: muons are the only leptons, and there is no b-tag
   (Q6 omits max b-tag).
 * The tools run with autocommit on (they only read), so a failed agent query

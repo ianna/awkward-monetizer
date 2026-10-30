@@ -45,7 +45,18 @@ check_answer (ADL Q1-Q8 scoring) is for when the user asks for it, after \
 submit_answer; every call is logged with its attempt number."""
 
 
-def build_server(tools: AnalysisTools, instructions: str = MCP_INSTRUCTIONS):
+NO_CODE_NOTE = """
+
+On this server awkward_eval is disabled: no agent-written code runs. Do every \
+step in run_sql (combinatorics as SQL joins) and submit with \
+submit_answer(sql=...)."""
+
+
+def build_server(tools: AnalysisTools, instructions: str | None = None):
+    """An MCP server over ``tools``. Without ``awkward_eval`` when
+    ``tools.allow_code`` is False (``agent mcp --no-code-tool``)."""
+    if instructions is None:
+        instructions = MCP_INSTRUCTIONS + ("" if tools.allow_code else NO_CODE_NOTE)
     try:                                   # mcp >= 2
         from mcp.server.mcpserver import MCPServer as Server
     except ImportError:                    # mcp 1.x
@@ -69,9 +80,10 @@ def build_server(tools: AnalysisTools, instructions: str = MCP_INSTRUCTIONS):
     def run_sql(sql: str, max_rows: int = 20) -> str:
         return call("run_sql", sql=sql, max_rows=max_rows)
 
-    @mcp.tool(description=desc["awkward_eval"])
-    def awkward_eval(code: str, where: str | None = None) -> str:
-        return call("awkward_eval", code=code, where=where or None)
+    if tools.allow_code:
+        @mcp.tool(description=desc["awkward_eval"])
+        def awkward_eval(code: str, where: str | None = None) -> str:
+            return call("awkward_eval", code=code, where=where or None)
 
     @mcp.tool(description=desc["submit_answer"])
     def submit_answer(explanation: str, result_id: str | None = None,
@@ -136,9 +148,13 @@ def serve(conn, *, plot_dir: str = "output/agent_plots",
           check_log: str | None = "output/agent_checks.jsonl",
           chunk_events: int = CHUNK_EVENTS, ref_cache: str | None = None,
           transport: str = "stdio", host: str = DEFAULT_HTTP_HOST,
-          port: int = DEFAULT_HTTP_PORT) -> None:
+          port: int = DEFAULT_HTTP_PORT, code_tool: bool = True) -> None:
     tools = AnalysisTools(conn, plot_dir=plot_dir, check_log=check_log,
-                          chunk_events=chunk_events, ref_cache=ref_cache)
+                          chunk_events=chunk_events, ref_cache=ref_cache,
+                          allow_code=code_tool)
+    if not code_tool:
+        print("awkward_eval disabled (--no-code-tool): agents get SQL, plotting "
+              "and checking only", file=sys.stderr)
     warn_reference_cost(tools)
     run_server(build_server(tools), transport, host=host, port=port)
 

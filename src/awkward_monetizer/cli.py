@@ -405,7 +405,8 @@ def _cmd_agent(args) -> None:
         serve(_agent_conn(args, quiet=True), plot_dir=args.plot_dir,
               check_log=args.check_log or None,
               chunk_events=args.chunk_events, ref_cache=ref_cache or None,
-              transport=args.transport, host=args.http_host, port=args.http_port)
+              transport=args.transport, host=args.http_host, port=args.http_port,
+              code_tool=not args.no_code_tool)
         return
 
     conn = _agent_conn(args)
@@ -743,6 +744,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "127.0.0.1, this computer only; awkward_eval is not "
                          "sandboxed, so do not expose it)")
     am.add_argument("--http-port", type=int, default=8765)
+    am.add_argument("--no-code-tool", action="store_true",
+                    help="leave out awkward_eval, so no agent-written Python "
+                         "runs; agents answer with SQL only (see SECURITY.md)")
 
     aq = ags.add_parser("questions", help="print the ADL Q1-Q8 task texts")
     aq.set_defaults(agent_cmd="questions")

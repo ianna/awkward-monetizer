@@ -664,3 +664,38 @@ def test_file_io_guard_keeps_array_code(sqlite_conn):
         "pt = ak.flatten(events.jets.pt)\n"
         "result = np.sqrt(ak.to_numpy(pt)) + np.log1p(np.abs(np.sin(1.0)))")})
     assert not err, out
+
+
+def test_no_code_tool_refuses_agent_code(sqlite_conn):
+    t = AnalysisTools(sqlite_conn, allow_code=False)
+    out, err = t.call("awkward_eval", {"code": "result = events.met_pt"})
+    assert err and "disabled" in out
+    out, err = t.call("submit_answer", {"sql": "SELECT met_pt FROM events",
+                                        "explanation": "MET"})
+    assert not err, out                       # SQL answers still work
+
+
+@pytest.mark.skipif(not _has_mcp, reason="mcp not installed")
+def test_mcp_server_without_code_tool(sqlite_conn):
+    import asyncio
+
+    from awkward_monetizer.agent.mcp_server import build_server
+    server = build_server(AnalysisTools(sqlite_conn, allow_code=False))
+    names = {t.name for t in asyncio.run(server.list_tools())}
+    assert "awkward_eval" not in names
+    assert {"describe_schema", "run_sql", "submit_answer", "check_answer"} <= names
+    assert "awkward_eval is disabled" in server.instructions
+
+
+def test_cli_mcp_no_code_tool_flag(monkeypatch):
+    import sys
+    seen = {}
+    mod = sys.modules.setdefault("awkward_monetizer.agent.mcp_server",
+                                 __import__("awkward_monetizer.agent.mcp_server",
+                                            fromlist=["serve"]))
+    monkeypatch.setattr(mod, "serve", lambda conn, **k: seen.update(k))
+    monkeypatch.setattr("awkward_monetizer.cli._agent_conn", lambda a, quiet=False: None)
+    main(["agent", "mcp", "--database", "x", "--no-code-tool"])
+    assert seen["code_tool"] is False
+    main(["agent", "mcp", "--database", "x"])
+    assert seen["code_tool"] is True
