@@ -210,8 +210,9 @@ the demo check log before a talk so attempts start at 1.
 
 * `awkward_eval` executes model-written Python in-process. AST checks block
   imports, dunder access, file/exec builtins and the numpy/Awkward functions
-  that read or write files (`np.load`, `np.save`, `ak.to_parquet`, ...), but
-  this is **not a security sandbox**: it limits neither memory nor CPU, and
+  that read or write files (`np.load`, `np.save`, `ak.to_parquet`, ...), and
+  `ak` and `np` hold only an allowlist of analysis functions (listed in the
+  tool description), but this is **not a security sandbox**: it limits neither memory nor CPU, and
   Python has indirect routes no syntax check can close. Use it on your own
   machine and data only; with `--transport http` keep the default 127.0.0.1
   address. `agent mcp --no-code-tool` leaves `awkward_eval` out entirely
