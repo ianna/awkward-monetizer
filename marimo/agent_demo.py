@@ -125,6 +125,34 @@ def _(TASKS, check_log, json, mo, os, pathlib, plot_dir, refresh, started):
 
 
 @app.cell
+def _(AnalysisTools):
+    import inspect
+    import re
+
+    import awkward_monetizer
+    from awkward_monetizer.agent import CHECK_SPEC, TOOL_SPECS
+
+    # link to the release tag that is running, so the line numbers match;
+    # a development install links to main
+    _v = awkward_monetizer.__version__
+    _release = re.fullmatch(r"\d+\.\d+\.\d+", _v) and _v != "0.0.0"
+    _ref = f"v{_v}" if _release else "main"
+    _repo = "https://github.com/ianna/awkward-monetizer/blob"
+    code_url = f"{_repo}/{_ref}/src/awkward_monetizer/agent"
+
+    def _source(name):
+        try:
+            _lines, _start = inspect.getsourcelines(getattr(AnalysisTools, name))
+        except (OSError, TypeError, AttributeError):
+            return f"{code_url}/tools.py"
+        return f"{code_url}/tools.py#L{_start}-L{_start + len(_lines) - 1}"
+
+    tool_docs = {spec["name"]: (spec["description"], _source(spec["name"]))
+                 for spec in [*TOOL_SPECS, CHECK_SPEC]}
+    return code_url, tool_docs
+
+
+@app.cell
 def _(TASKS, mo):
     question = mo.ui.dropdown(
         options={f"{q}: {TASKS[q][0].split(': ', 1)[1]}": q for q in TASKS},
@@ -135,7 +163,7 @@ def _(TASKS, mo):
 
 @app.cell
 def _(AnalysisTools, ScriptedClient, TASKS, database, db, expert_script, json,
-      load_demo_db, mo, np, plot_dir, plt, question, run, run_agent):
+      load_demo_db, mo, np, plot_dir, plt, question, run, run_agent, tool_docs):
     def _replay(q):
         if database.value.endswith(".root"):
             conn = load_demo_db(database.value, backend="sqlite")
@@ -165,9 +193,15 @@ def _(AnalysisTools, ScriptedClient, TASKS, database, db, expert_script, json,
         ax.set_ylabel("entries")
         fig.tight_layout()
         verdict = "PASS" if check.get("passed") else "FAIL"
+        _used = list(dict.fromkeys([t["tool"] for t in trace] + ["check_answer"]))
+        _docs = mo.accordion({
+            f"What the agent reads about {name}": mo.md(
+                f"{tool_docs[name][0]}\n\n[source on GitHub]({tool_docs[name][1]})")
+            for name in _used if name in tool_docs})
         return mo.vstack([
             mo.md(f"**{TASKS[q][1]}**"),
             mo.ui.table(trace, selection=None, pagination=False),
+            _docs,
             mo.hstack([fig, mo.stat(value=verdict, label=f"check_answer {q}",
                                     caption=check.get("reason", ""))],
                       align="center"),
@@ -185,11 +219,13 @@ def _(AnalysisTools, ScriptedClient, TASKS, database, db, expert_script, json,
 
 
 @app.cell
-def _(mo, question, run):
+def _(code_url, mo, question, run):
     replay_controls = mo.vstack([
         mo.md("The scripted reference solution, driven through the same tools the "
               "agent uses: no model, no network. On the full 49 M-event record, "
-              "Q6 takes about 5 minutes."),
+              "Q6 takes about 5 minutes. The tools are Python functions in "
+              f"[tools.py]({code_url}/tools.py); [mcp_server.py]({code_url}/mcp_server.py) "
+              "publishes them to the agent with their descriptions."),
         mo.hstack([question, run], justify="start"),
     ])
     return (replay_controls,)
