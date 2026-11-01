@@ -15,9 +15,8 @@ Only the latest release receives security fixes.
 The agent tool `awkward_eval` (`awkward_monetizer/agent/tools.py`) runs Python
 code written by an AI agent, so that the agent can do combinatorics on Awkward
 arrays. It is the only place in the package that executes code it was given
-(one `exec`). Static analysers report it as CWE-94 (code injection); that is
-this intended behaviour, for example
-[GCVE-110-VULN-PYPI-2026-000656](https://www.vulnetix.com/vdb/GCVE-110-VULN-PYPI-2026-000656).
+(one `exec`). Running agent code is the purpose of this tool; what matters is
+what that code can reach.
 
 ### Who can reach it
 
@@ -41,12 +40,29 @@ small allow-list); and numpy and Awkward functions that read or write files
 (`np.load`, `np.save`, `np.loadtxt`, `np.memmap`, `ak.to_parquet`,
 `ak.from_parquet`, ...).
 
+Since Version 0.3.3 the code no longer receives the `ak` and `np` modules:
+it receives namespaces holding only a named list of analysis functions,
+classes and constants (`AK_ALLOWED` and `NP_ALLOWED` in `tools.py`), so
+submodules such as `ak.highlevel` or `ak.behaviors`, which re-export Python's
+`builtins` and `sys`, are not reachable. A test walks a few attribute steps
+from everything the code is given and fails if it reaches a module or an
+exec-like built-in.
+
 It is **not a sandbox**. It does not limit memory or CPU, and Python has
 indirect routes that no syntax check can close. Treat agent code as code you
 run yourself.
 
 SQL from the agent (`run_sql`, SQL answers) is checked to be a single read-only
 `SELECT`. That check is a pattern match, not a parser.
+
+## Advisories
+
+- **GCVE-110-VULN-PYPI-2026-000656** (CWE-184, incomplete list of disallowed
+  inputs), reported by Vulnetix. In Versions 0.2.0 to 0.3.2 agent code could
+  reach Python's built-ins through public Awkward submodules
+  (`ak.highlevel.builtins.exec`, `ak.behaviors.mixins.sys`) and run any
+  command as the user running the server. Fixed in Version 0.3.3 by the
+  allowlist above. On older versions, use `--no-code-tool`.
 
 ## Recommended use
 

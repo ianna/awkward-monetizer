@@ -666,6 +666,75 @@ def test_file_io_guard_keeps_array_code(sqlite_conn):
     assert not err, out
 
 
+# Reported by Vulnetix (GCVE-110-VULN-PYPI-2026-000656): public Awkward
+# submodules re-export Python's builtins and sys.
+@pytest.mark.parametrize("code", [
+    "ak.highlevel.builtins.exec('x = 1', {})\nresult = events.met_pt",
+    "os = ak.behaviors.mixins.sys.modules['os']\nresult = events.met_pt",
+    "result = np.testing.assert_array_equal",
+    "result = ak.operations.ak_num",
+])
+def test_check_code_rejects_modules_outside_allowlist(code):
+    with pytest.raises(ToolError, match="not available in awkward_eval"):
+        check_code(code)
+
+
+def test_allowlist_holds_against_aliases(sqlite_conn):
+    t = AnalysisTools(sqlite_conn)
+    for code in ("a = ak\nresult = a.highlevel",
+                 "a = np\nresult = a.testing"):
+        out, err = t.call("awkward_eval", {"code": code})
+        assert err and "not available" in out, out
+
+
+def test_agent_scope_reaches_no_module(sqlite_conn):
+    """No module and no exec-like builtin within a few public attribute steps
+    of anything agent code is given (the denied names are rejected by
+    check_code, so the walk does not follow them)."""
+    import builtins
+    import types
+
+    from awkward_monetizer.agent.tools import (
+        _FILE_IO_ATTRS,
+        AGENT_AK,
+        AGENT_NP,
+        jets_p4,
+        muons_p4,
+    )
+    events = AnalysisTools(sqlite_conn)._events(None)[:5]
+    roots = {"ak": AGENT_AK, "np": AGENT_NP, "events": events,
+             "jets_p4(events)": jets_p4(events),
+             "muons_p4(events)": muons_p4(events)}
+    bad = {id(f) for f in (builtins.exec, builtins.eval, builtins.open,
+                           builtins.compile, builtins.__import__,
+                           builtins.getattr, builtins.vars)}
+    found, seen = [], set()
+    queue = [(obj, name, 0) for name, obj in roots.items()]
+    while queue:
+        obj, path, depth = queue.pop(0)
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, types.ModuleType) or id(obj) in bad:
+            found.append(path)
+            continue
+        if depth == 3:
+            continue
+        try:
+            names = dir(obj)
+        except Exception:  # noqa: BLE001, S112
+            continue
+        for attr in names:
+            if attr.startswith("_") or attr in _FILE_IO_ATTRS:
+                continue
+            try:
+                value = getattr(obj, attr)
+            except Exception:  # noqa: BLE001, S112
+                continue
+            queue.append((value, f"{path}.{attr}", depth + 1))
+    assert not found, found
+
+
 def test_no_code_tool_refuses_agent_code(sqlite_conn):
     t = AnalysisTools(sqlite_conn, allow_code=False)
     out, err = t.call("awkward_eval", {"code": "result = events.met_pt"})

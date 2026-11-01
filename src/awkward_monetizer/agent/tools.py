@@ -37,6 +37,7 @@ import inspect
 import json
 import re
 import time
+import types
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,61 @@ TABLE_NOTES = {
     "muons": "one row per muon. (event_id, muon_index) identifies a muon; pt "
              "and mass in GeV, charge = +1/-1. Muons are the only leptons.",
 }
+
+# Agent code gets these names as `ak` and `np`, not the modules. A denylist
+# cannot be complete: public submodules re-export Python's builtins, sys or os
+# (ak.highlevel.builtins, ak.behaviors.mixins.sys), so only named functions,
+# classes and constants are reachable. Each entry is checked by the tests
+# (no module or exec-like builtin within a few attribute steps).
+AK_ALLOWED = frozenset({
+    "Array", "Record", "all", "any", "argcartesian", "argcombinations",
+    "argmax", "argmin", "argsort", "array_equal", "almost_equal",
+    "broadcast_arrays", "cartesian", "combinations", "concatenate", "count",
+    "count_nonzero", "drop_none", "fields", "fill_none", "firsts", "flatten",
+    "is_none", "local_index", "mask", "max", "mean", "min", "nan_to_none",
+    "nan_to_num", "num", "pad_none", "prod", "ptp", "ravel", "run_lengths",
+    "singletons", "sort", "std", "sum", "to_list", "to_numpy", "to_packed",
+    "unflatten", "unzip", "values_astype", "var", "where", "with_field",
+    "without_field", "zip",
+})
+NP_ALLOWED = frozenset({
+    # constants and dtypes
+    "pi", "e", "inf", "nan", "float32", "float64", "int32", "int64", "bool_",
+    # elementwise maths
+    "abs", "absolute", "sqrt", "square", "power", "exp", "expm1", "log",
+    "log10", "log2", "log1p", "sin", "cos", "tan", "arcsin", "arccos",
+    "arctan", "arctan2", "sinh", "cosh", "tanh", "arcsinh", "arccosh",
+    "arctanh", "hypot", "radians", "degrees", "deg2rad", "rad2deg", "sign",
+    "floor", "ceil", "round", "rint", "trunc", "mod", "fmod", "remainder",
+    "minimum", "maximum", "fmin", "fmax", "clip", "where", "isfinite",
+    "isnan", "isinf", "nan_to_num", "logical_and", "logical_or",
+    "logical_not", "isclose", "allclose",
+    # array building and reductions
+    "array", "asarray", "empty", "zeros", "ones", "full", "arange",
+    "linspace", "concatenate", "stack", "sort", "argsort", "unique",
+    "count_nonzero", "nonzero", "flatnonzero", "sum", "prod", "mean", "std",
+    "var", "min", "max", "amin", "amax", "argmin", "argmax", "cumsum",
+    "diff", "median", "quantile", "percentile", "histogram", "digitize",
+    "searchsorted", "any", "all",
+})
+
+
+class _AgentNamespace(types.SimpleNamespace):
+    """The allowlisted part of a module, as agent code sees it."""
+
+    def __getattr__(self, attr: str):          # only for names not set
+        raise AttributeError(f"{attr!r} is not available in awkward_eval")
+
+
+def _agent_namespace(module, names: frozenset) -> _AgentNamespace:
+    return _AgentNamespace(**{n: getattr(module, n) for n in sorted(names)
+                              if hasattr(module, n)})
+
+
+AGENT_AK = _agent_namespace(ak, AK_ALLOWED)
+AGENT_NP = _agent_namespace(np, NP_ALLOWED)
+_ALLOWED = {"ak": AK_ALLOWED, "np": NP_ALLOWED}
+
 
 # --------------------------------------------------------------------------
 # Tool specifications (Anthropic tool-use JSON schema)
@@ -121,7 +177,9 @@ TOOL_SPECS = [
             "arrays with .mass .pt .deltaR(), addable with +), Z_MASS, TOP_MASS. "
             "The code must assign a 1-D numeric array (one value per histogram "
             "entry, no None) to a variable named `result`. No imports and no file "
-            "I/O (np.load/np.save, ak.to_parquet and similar are rejected). On a "
+            "I/O (np.load/np.save, ak.to_parquet and similar are rejected). "
+            "ak and np hold only these names: ak: " + ", ".join(sorted(AK_ALLOWED))
+            + "; np: " + ", ".join(sorted(NP_ALLOWED)) + ". On a "
             "large database the code runs on consecutive chunks of events and "
             "the results are concatenated, so compute event by event (no "
             "normalising by global totals). Returns a summary and a result_id "
@@ -305,6 +363,12 @@ def check_code(code: str) -> ast.Module:
             raise ToolError(f"{node.attr!r} reads or writes files, which is not "
                             "allowed; work on `events` and return `result` (use "
                             "plot_result for plots)")
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                and node.value.id in _ALLOWED
+                and node.attr not in _ALLOWED[node.value.id]):
+            raise ToolError(
+                f"{node.value.id}.{node.attr} is not available in awkward_eval; "
+                f"allowed: {', '.join(sorted(_ALLOWED[node.value.id]))}")
         if isinstance(node, ast.Name) and node.id.startswith("__"):
             raise ToolError(f"name {node.id!r} is not allowed")
     if not any(isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign))
@@ -636,8 +700,9 @@ class AnalysisTools:
         return self._events_cache[where]
 
     def _run_code(self, tree: ast.Module, events: ak.Array) -> np.ndarray:
-        scope = {"__builtins__": _SAFE_BUILTINS, "events": events, "ak": ak,
-                 "np": np, "jets_p4": jets_p4, "muons_p4": muons_p4,
+        scope = {"__builtins__": _SAFE_BUILTINS, "events": events,
+                 "ak": AGENT_AK, "np": AGENT_NP,
+                 "jets_p4": jets_p4, "muons_p4": muons_p4,
                  "Z_MASS": Z_MASS, "TOP_MASS": TOP_MASS}
         exec(compile(tree, "<agent>", "exec"), scope)   # noqa: S102 (guarded above)
         if "result" not in scope:
